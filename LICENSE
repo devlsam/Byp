@@ -1,21 +1,26 @@
-MIT License
+Business Source License 1.1 (BUSL-1.1)
 
-Copyright (c) 2026 BYP Client
+Copyright (c) 2026 Devlsam
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Licensed under the Business Source License 1.1, version 1.1 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+    https://github.com/devlsam/Byp/blob/main/LICENSE
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. Grant of Additional Use Permission.
+The Licensor hereby grants you the right to view, study, audit, and use the software for personal, non-commercial, and evaluation purposes.
+
+2. Restrictions.
+You may not:
+  a) Rebrand, white-label, or distribute the Software under a different name with the intent to deceive or commercialize.
+  b) Offer the Software or any modified version of it as a managed service, commercial VPN product, or paid proxy service to third parties.
+  c) Remove or alter any copyright, trademark, or proprietary notices included in the Software.
+
+3. Change Date.
+The Licensor may designate a Change Date for this License. After the Change Date, this software shall become licensed under the Apache License, Version 2.0.
+[Optional Change Date: January 1, 2030]
+
+4. Third-Party Components.
+This Software incorporates third-party open-source components, including Xray-core (Mozilla Public License 2.0) and tun2socks / Wintun, which remain governed by their respective licenses.
+
+5. Disclaimer.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
