@@ -1,0 +1,35 @@
+.task
+bin
+frontend/dist
+frontend/node_modules
+build/linux/appimage/build
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+# Mobile generated (per-machine; overlays hold absolute paths)
+build/ios/xcode/overlay.json
+build/ios/xcode/gen/
+build/android/overlay.json
+build/android/gen/
+
+# Binaries, apps, installers and archives
+*.exe
+*.zip
+*.7z
+*.rar
+*.tar.gz
+*.tgz
+*.msi
+*.msix
+*.app
+*.dmg
+*.apk
+*.ipa
+*.dll.bak
+release-local.bat
+*.bat
+scratch/
+
+# IDE and OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

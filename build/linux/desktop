@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=BYP Client
+Comment=BYP Client application
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/byp.exe %u
+Terminal=false
+Type=Application
+Icon=byp.exe
+Categories=Utility;
+StartupWMClass=byp.exe
+
+ 
