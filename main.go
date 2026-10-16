@@ -21,7 +21,7 @@ import (
 var assets embed.FS
 
 // AppVersion is the version of the application, dynamic via ldflags during release build
-var AppVersion = "0.9.0"
+var AppVersion = "1.0.0"
 
 //go:embed build/appicon.png
 var appIcon []byte
@@ -80,7 +80,7 @@ func main() {
 
 	// Configure Auto-Updater backed by GitHub Releases public API
 	ghProvider, err := github.New(github.Config{
-		Repository: "devlsam/Beep-client",
+		Repository: "devlsam/Byp",
 		Prerelease: false,
 		HTTPClient: updaterHTTPClient,
 	})

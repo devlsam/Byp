@@ -176,7 +176,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   };
 
   const handleReportBug = () => {
-    const url = 'https://github.com/devlsam/Beep-client/issues';
+    const url = 'https://github.com/devlsam/Byp/issues';
     try {
       Browser.OpenURL(url);
     } catch (_) {
