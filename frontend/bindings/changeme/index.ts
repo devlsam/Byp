@@ -6,7 +6,7 @@ export {
     AppService
 };
 
-export type {
+export {
     AppState,
     PingEvent,
     UpdateInfo,

@@ -3,6 +3,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import { Create as $Create } from "@wailsio/runtime";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as core$0 from "./internal/core/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -11,40 +15,159 @@ import * as storage$0 from "./internal/storage/models.js";
 /**
  * AppState represents the comprehensive state of the desktop client.
  */
-export interface AppState {
+export class AppState {
     "connected": boolean;
     "activeProfileId": string;
     "activeMode": string;
     "coreVersion": string;
     "settings": storage$0.Settings;
     "stats": core$0.TrafficStats;
+
+    /** Creates a new AppState instance. */
+    constructor($$source: Partial<AppState> = {}) {
+        if (!("connected" in $$source)) {
+            this["connected"] = false;
+        }
+        if (!("activeProfileId" in $$source)) {
+            this["activeProfileId"] = "";
+        }
+        if (!("activeMode" in $$source)) {
+            this["activeMode"] = "";
+        }
+        if (!("coreVersion" in $$source)) {
+            this["coreVersion"] = "";
+        }
+        if (!("settings" in $$source)) {
+            this["settings"] = (new storage$0.Settings());
+        }
+        if (!("stats" in $$source)) {
+            this["stats"] = (new core$0.TrafficStats());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AppState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AppState {
+        const $$createField4_0 = $$createType0;
+        const $$createField5_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("settings" in $$parsedSource) {
+            $$parsedSource["settings"] = $$createField4_0($$parsedSource["settings"]);
+        }
+        if ("stats" in $$parsedSource) {
+            $$parsedSource["stats"] = $$createField5_0($$parsedSource["stats"]);
+        }
+        return new AppState($$parsedSource as Partial<AppState>);
+    }
 }
 
 /**
  * PingEvent represents a latency update event emitted to the frontend.
  */
-export interface PingEvent {
+export class PingEvent {
     "id": string;
     "ping": number;
+
+    /** Creates a new PingEvent instance. */
+    constructor($$source: Partial<PingEvent> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("ping" in $$source)) {
+            this["ping"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PingEvent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PingEvent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PingEvent($$parsedSource as Partial<PingEvent>);
+    }
 }
 
 /**
  * UpdateInfo represents release details returned when checking for updates.
  */
-export interface UpdateInfo {
+export class UpdateInfo {
     "available": boolean;
     "version": string;
     "name": string;
     "notes": string;
     "publishedAt": string;
     "currentVersion": string;
+
+    /** Creates a new UpdateInfo instance. */
+    constructor($$source: Partial<UpdateInfo> = {}) {
+        if (!("available" in $$source)) {
+            this["available"] = false;
+        }
+        if (!("version" in $$source)) {
+            this["version"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("notes" in $$source)) {
+            this["notes"] = "";
+        }
+        if (!("publishedAt" in $$source)) {
+            this["publishedAt"] = "";
+        }
+        if (!("currentVersion" in $$source)) {
+            this["currentVersion"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UpdateInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UpdateInfo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UpdateInfo($$parsedSource as Partial<UpdateInfo>);
+    }
 }
 
 /**
  * VpnStatusEvent represents an active connection status update event.
  */
-export interface VpnStatusEvent {
+export class VpnStatusEvent {
     "connected": boolean;
     "activeProfileId": string;
     "activeMode": string;
+
+    /** Creates a new VpnStatusEvent instance. */
+    constructor($$source: Partial<VpnStatusEvent> = {}) {
+        if (!("connected" in $$source)) {
+            this["connected"] = false;
+        }
+        if (!("activeProfileId" in $$source)) {
+            this["activeProfileId"] = "";
+        }
+        if (!("activeMode" in $$source)) {
+            this["activeMode"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VpnStatusEvent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): VpnStatusEvent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new VpnStatusEvent($$parsedSource as Partial<VpnStatusEvent>);
+    }
 }
+
+// Private type creation functions
+const $$createType0 = storage$0.Settings.createFrom;
+const $$createType1 = core$0.TrafficStats.createFrom;

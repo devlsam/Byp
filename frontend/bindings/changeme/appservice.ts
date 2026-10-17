@@ -8,7 +8,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -35,14 +35,18 @@ export function AddSubscription(name: string, subURL: string): $CancellablePromi
  * BuildCustomProfile constructs a validated Profile object from form parameters.
  */
 export function BuildCustomProfile(params: core$0.CustomOutboundParams): $CancellablePromise<storage$0.Profile> {
-    return $Call.ByID(3499116746, params);
+    return $Call.ByID(3499116746, params).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
  * CheckForUpdates queries GitHub Releases for newer releases.
  */
 export function CheckForUpdates(): $CancellablePromise<$models.UpdateInfo | null> {
-    return $Call.ByID(3671876993);
+    return $Call.ByID(3671876993).then(($result: any) => {
+        return $$createType2($result);
+    });
 }
 
 /**
@@ -104,36 +108,46 @@ export function GetConfigJSON(profileID: string): $CancellablePromise<string> {
 /**
  * GetProfiles returns all configured profiles.
  */
-export function GetProfiles(): $CancellablePromise<storage$0.Profile[] | null> {
-    return $Call.ByID(709657640);
+export function GetProfiles(): $CancellablePromise<storage$0.Profile[]> {
+    return $Call.ByID(709657640).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
  * GetRunningApps lists active user-facing applications for Split Tunneling selection.
  */
-export function GetRunningApps(): $CancellablePromise<tun$0.ProcessAppInfo[] | null> {
-    return $Call.ByID(272382365);
+export function GetRunningApps(): $CancellablePromise<tun$0.ProcessAppInfo[]> {
+    return $Call.ByID(272382365).then(($result: any) => {
+        return $$createType5($result);
+    });
 }
 
 /**
  * GetSettings returns the current app settings.
  */
 export function GetSettings(): $CancellablePromise<storage$0.Settings> {
-    return $Call.ByID(3018893939);
+    return $Call.ByID(3018893939).then(($result: any) => {
+        return $$createType6($result);
+    });
 }
 
 /**
  * GetState returns the current application state.
  */
 export function GetState(): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(800887515);
+    return $Call.ByID(800887515).then(($result: any) => {
+        return $$createType7($result);
+    });
 }
 
 /**
  * GetSubscriptions returns all subscriptions.
  */
-export function GetSubscriptions(): $CancellablePromise<storage$0.Subscription[] | null> {
-    return $Call.ByID(2592397016);
+export function GetSubscriptions(): $CancellablePromise<storage$0.Subscription[]> {
+    return $Call.ByID(2592397016).then(($result: any) => {
+        return $$createType9($result);
+    });
 }
 
 /**
@@ -153,8 +167,10 @@ export function ImportFromClipboard(content: string): $CancellablePromise<number
 /**
  * PingAllProfiles tests latency for all profiles concurrently using worker batching.
  */
-export function PingAllProfiles(): $CancellablePromise<{ [_ in string]?: number } | null> {
-    return $Call.ByID(2220585915);
+export function PingAllProfiles(): $CancellablePromise<{ [_ in string]?: number }> {
+    return $Call.ByID(2220585915).then(($result: any) => {
+        return $$createType10($result);
+    });
 }
 
 /**
@@ -195,7 +211,7 @@ export function SaveSettings(settings: storage$0.Settings): $CancellablePromise<
 /**
  * SaveSplitTunnelConfig saves split tunneling mode and per-app routing rules.
  */
-export function SaveSplitTunnelConfig(mode: string, apps: string[] | null): $CancellablePromise<void> {
+export function SaveSplitTunnelConfig(mode: string, apps: string[]): $CancellablePromise<void> {
     return $Call.ByID(2473722997, mode, apps);
 }
 
@@ -240,3 +256,16 @@ export function UpdateProfile(profile: storage$0.Profile): $CancellablePromise<v
 export function UpdateSubscription(subID: string): $CancellablePromise<void> {
     return $Call.ByID(280978694, subID);
 }
+
+// Private type creation functions
+const $$createType0 = storage$0.Profile.createFrom;
+const $$createType1 = $models.UpdateInfo.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = $Create.Array($$createType0);
+const $$createType4 = tun$0.ProcessAppInfo.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = storage$0.Settings.createFrom;
+const $$createType7 = $models.AppState.createFrom;
+const $$createType8 = storage$0.Subscription.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = $Create.Map($Create.Any, $Create.Any);
