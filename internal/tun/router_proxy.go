@@ -59,6 +59,7 @@ type SplitRouterProxy struct {
 	normalizedApps  map[string]struct{} // Pre-compiled O(1) lookup map
 	physicalLanIP   net.IP
 	physicalIfIndex int
+	netOrderIfIndex int
 }
 
 // UpdateConfig dynamically updates split tunneling rules and physical adapter binding
@@ -89,6 +90,7 @@ func (r *SplitRouterProxy) UpdateConfig(mode string, apps []string, lanIP net.IP
 	}
 	if ifIndex > 0 {
 		r.physicalIfIndex = ifIndex
+		r.netOrderIfIndex = int(bits.ReverseBytes32(uint32(ifIndex)))
 	}
 }
 
@@ -110,9 +112,27 @@ func SetGlobalSplitConfig(mode string, apps []string, lanIP net.IP, ifIndex int)
 	}
 }
 
+type RouteAction int
+
+const (
+	ActionDrop RouteAction = iota
+	ActionDirect
+	ActionProxy
+)
+
 var selfPID = uint32(os.Getpid())
 
-func (r *SplitRouterProxy) shouldProxy(metadata *M.Metadata) bool {
+func (r *SplitRouterProxy) routeDecision(metadata *M.Metadata) RouteAction {
+	r.mu.RLock()
+	mode := r.mode
+	norm := r.normalizedApps
+	r.mu.RUnlock()
+
+	// Fast-path DNS Rule (Port 53): In Whitelist mode, immediately proxy non-core DNS queries
+	if metadata.DstPort == 53 && mode == "whitelist" {
+		return ActionProxy
+	}
+
 	network := "tcp"
 	if metadata.Network == M.UDP {
 		network = "udp"
@@ -120,42 +140,36 @@ func (r *SplitRouterProxy) shouldProxy(metadata *M.Metadata) bool {
 
 	exeName, exePath, pid := ResolveProcessByPort(network, metadata.SrcPort)
 
-	// 1. Absolute Anti-Routing Loop Guarantee:
-	// Self process or core engine traffic must NEVER enter SOCKS5!
+	// Anti-loopback: drop self and engine traffic
 	if pid == selfPID {
-		return false
+		return ActionDrop
 	}
 	lowerExe := strings.ToLower(exeName)
 	if lowerExe == "xray.exe" || lowerExe == "v2ray.exe" || lowerExe == "sing-box.exe" || lowerExe == "byp.exe" {
-		return false
+		return ActionDrop
 	}
 
-	r.mu.RLock()
-	mode := r.mode
-	norm := r.normalizedApps
-	r.mu.RUnlock()
-
-	// Mode: Global TUN -> Proxy all other traffic
 	if mode == "" || mode == "all" || mode == "global" {
-		return true
-	}
-
-	// 2. DNS Rule (Port 53): In Whitelist mode, proxy non-core DNS queries to protect from ISP poisoning
-	if metadata.DstPort == 53 && mode == "whitelist" {
-		return true
+		return ActionProxy
 	}
 
 	matched := matchAppFast(exeName, exePath, norm)
 
 	if mode == "whitelist" {
-		return matched
+		if matched {
+			return ActionProxy
+		}
+		return ActionDirect
 	}
 
 	if mode == "blacklist" {
-		return !matched
+		if matched {
+			return ActionDirect
+		}
+		return ActionProxy
 	}
 
-	return true
+	return ActionProxy
 }
 
 func matchAppFast(exeName, exePath string, norm map[string]struct{}) bool {
@@ -177,23 +191,31 @@ func matchAppFast(exeName, exePath string, norm map[string]struct{}) bool {
 
 // DialContext handles TCP connections entering the TUN interface
 func (r *SplitRouterProxy) DialContext(ctx context.Context, metadata *M.Metadata) (net.Conn, error) {
-	if r.shouldProxy(metadata) {
+	action := r.routeDecision(metadata)
+	switch action {
+	case ActionDrop:
+		// Drop self-traffic and engine traffic to terminate any routing loop immediately
+		return nil, net.ErrClosed
+	case ActionProxy:
 		r.mu.RLock()
 		s5 := r.socks5Proxy
 		r.mu.RUnlock()
 		if s5 != nil {
 			return s5.DialContext(ctx, metadata)
 		}
+		return nil, fmt.Errorf("socks5 proxy backend unavailable")
+	case ActionDirect:
+		return r.dialDirectTCP(ctx, metadata)
+	default:
+		return nil, net.ErrClosed
 	}
-
-	// Bypassed Connection: Dial directly through physical hardware NIC
-	return r.dialDirectTCP(ctx, metadata)
 }
 
 func (r *SplitRouterProxy) dialDirectTCP(ctx context.Context, metadata *M.Metadata) (net.Conn, error) {
 	r.mu.RLock()
 	lanIP := r.physicalLanIP
 	ifIndex := r.physicalIfIndex
+	netOrderVal := r.netOrderIfIndex
 	r.mu.RUnlock()
 
 	dialer := &net.Dialer{
@@ -206,12 +228,18 @@ func (r *SplitRouterProxy) dialDirectTCP(ctx context.Context, metadata *M.Metada
 	}
 
 	if ifIndex > 0 {
-		netOrderVal := bits.ReverseBytes32(uint32(ifIndex))
-
 		dialer.Control = func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
+				handle := windows.Handle(fd)
 				const IP_UNICAST_IF = 31
-				_ = windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IP, IP_UNICAST_IF, int(netOrderVal))
+				const IPV6_UNICAST_IF = 31
+				_ = windows.SetsockoptInt(handle, windows.IPPROTO_IP, IP_UNICAST_IF, netOrderVal)
+				_ = windows.SetsockoptInt(handle, windows.IPPROTO_IPV6, IPV6_UNICAST_IF, ifIndex)
+
+				// 256KB buffer sizes to minimize syscall overhead during high-speed direct throughput
+				const sockBufSize = 256 * 1024
+				_ = windows.SetsockoptInt(handle, windows.SOL_SOCKET, windows.SO_RCVBUF, sockBufSize)
+				_ = windows.SetsockoptInt(handle, windows.SOL_SOCKET, windows.SO_SNDBUF, sockBufSize)
 			})
 		}
 	}
@@ -221,23 +249,30 @@ func (r *SplitRouterProxy) dialDirectTCP(ctx context.Context, metadata *M.Metada
 
 // DialUDP handles UDP sessions entering the TUN interface
 func (r *SplitRouterProxy) DialUDP(metadata *M.Metadata) (net.PacketConn, error) {
-	if r.shouldProxy(metadata) {
+	action := r.routeDecision(metadata)
+	switch action {
+	case ActionDrop:
+		return nil, net.ErrClosed
+	case ActionProxy:
 		r.mu.RLock()
 		s5 := r.socks5Proxy
 		r.mu.RUnlock()
 		if s5 != nil {
 			return s5.DialUDP(metadata)
 		}
+		return nil, fmt.Errorf("socks5 proxy backend unavailable")
+	case ActionDirect:
+		return r.listenDirectUDP(metadata)
+	default:
+		return nil, net.ErrClosed
 	}
-
-	// Bypassed UDP Session: Listen and send directly via physical hardware NIC
-	return r.listenDirectUDP(metadata)
 }
 
 func (r *SplitRouterProxy) listenDirectUDP(metadata *M.Metadata) (net.PacketConn, error) {
 	r.mu.RLock()
 	lanIP := r.physicalLanIP
 	ifIndex := r.physicalIfIndex
+	netOrderVal := r.netOrderIfIndex
 	r.mu.RUnlock()
 
 	var bindAddr string
@@ -249,12 +284,17 @@ func (r *SplitRouterProxy) listenDirectUDP(metadata *M.Metadata) (net.PacketConn
 
 	lc := net.ListenConfig{}
 	if ifIndex > 0 {
-		netOrderVal := bits.ReverseBytes32(uint32(ifIndex))
-
 		lc.Control = func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
+				handle := windows.Handle(fd)
 				const IP_UNICAST_IF = 31
-				_ = windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IP, IP_UNICAST_IF, int(netOrderVal))
+				const IPV6_UNICAST_IF = 31
+				_ = windows.SetsockoptInt(handle, windows.IPPROTO_IP, IP_UNICAST_IF, netOrderVal)
+				_ = windows.SetsockoptInt(handle, windows.IPPROTO_IPV6, IPV6_UNICAST_IF, ifIndex)
+
+				const sockBufSize = 256 * 1024
+				_ = windows.SetsockoptInt(handle, windows.SOL_SOCKET, windows.SO_RCVBUF, sockBufSize)
+				_ = windows.SetsockoptInt(handle, windows.SOL_SOCKET, windows.SO_SNDBUF, sockBufSize)
 			})
 		}
 	}
