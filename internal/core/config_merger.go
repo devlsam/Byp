@@ -6,11 +6,13 @@ import (
 )
 
 type ConfigMergerOptions struct {
-	SocksPort  int
-	HttpPort   int
-	ApiPort    int
-	DnsServers []string
-	BindIP     string
+	SocksPort    int
+	HttpPort     int
+	ApiPort      int
+	DnsServers   []string
+	BindIP       string
+	ServerDomain string
+	ServerIP     string
 }
 
 // MergeCompleteConfig takes the outbound JSON (either raw single outbound or {"outbounds":[...]})
@@ -116,6 +118,15 @@ func MergeCompleteConfig(outboundRaw string, opts ConfigMergerOptions) (string, 
 		}
 	}
 
+	if opts.ServerDomain != "" && opts.ServerIP != "" {
+		hosts, ok := dnsConfig["hosts"].(map[string]any)
+		if !ok {
+			hosts = make(map[string]any)
+			dnsConfig["hosts"] = hosts
+		}
+		hosts[opts.ServerDomain] = opts.ServerIP
+	}
+
 	if len(opts.DnsServers) > 0 {
 		dnsConfig["servers"] = opts.DnsServers
 	}
@@ -205,7 +216,7 @@ func MergeCompleteConfig(outboundRaw string, opts ConfigMergerOptions) (string, 
 		"levels": map[string]any{
 			"0": map[string]any{
 				"handshake":         4,
-				"connIdle":          30,
+				"connIdle":          300,
 				"uplinkOnly":        2,
 				"downlinkOnly":      5,
 				"bufferSize":        4,
@@ -230,7 +241,7 @@ func MergeCompleteConfig(outboundRaw string, opts ConfigMergerOptions) (string, 
 
 	fullConfig := map[string]any{
 		"log": map[string]any{
-			"loglevel": "warning",
+			"loglevel": "none",
 		},
 		"api":       api,
 		"stats":     map[string]any{},
