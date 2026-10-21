@@ -28,6 +28,8 @@ type AppService struct {
 	activeProfileID string
 	activeMode      string
 	app             *application.App
+	watchCtx        context.Context
+	watchCancel     context.CancelFunc
 }
 
 // NewAppService initializes a new AppService with storage and engine managers.

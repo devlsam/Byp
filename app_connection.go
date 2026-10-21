@@ -1,13 +1,61 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"time"
 
 	"changeme/internal/core"
+	"changeme/internal/storage"
 	"changeme/internal/sysproxy"
 	"changeme/internal/sysutil"
 )
+
+// resolveServerIPv4 resolves a server hostname or IP to an IPv4 string.
+func resolveServerIPv4(host string) string {
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+		return ip.String()
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return ""
+	}
+	for _, ip := range ips {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return ""
+}
+
+// buildProfileConfig generates the complete Xray configuration for a given profile.
+func (a *AppService) buildProfileConfig(profile *storage.Profile, bindIP string) (string, error) {
+	settings := a.store.GetSettings()
+	var dnsServers []string
+	if settings.PrimaryDNS != "" {
+		dnsServers = append(dnsServers, settings.PrimaryDNS)
+	}
+	if settings.SecondaryDNS != "" {
+		dnsServers = append(dnsServers, settings.SecondaryDNS)
+	}
+
+	return core.MergeCompleteConfig(profile.OutboundJSON, core.ConfigMergerOptions{
+		SocksPort:    settings.SocksPort,
+		HttpPort:     settings.HttpPort,
+		ApiPort:      10807,
+		DnsServers:   dnsServers,
+		BindIP:       bindIP,
+		ServerDomain: profile.Server,
+		ServerIP:     resolveServerIPv4(profile.Server),
+	})
+}
 
 // Connect connects to the designated profile using the specified operating mode (tun, proxy, or core).
 func (a *AppService) Connect(profileID string, mode string) error {
@@ -29,14 +77,6 @@ func (a *AppService) Connect(profileID string, mode string) error {
 
 	a.log("Generating Xray configuration for profile '%s' (%s)", profile.Name, profile.Protocol)
 
-	var dnsServers []string
-	if settings.PrimaryDNS != "" {
-		dnsServers = append(dnsServers, settings.PrimaryDNS)
-	}
-	if settings.SecondaryDNS != "" {
-		dnsServers = append(dnsServers, settings.SecondaryDNS)
-	}
-
 	var bindIP string
 	if mode == "tun" {
 		if adapterInfo, err := a.tunMgr.GetPhysicalAdapterInfo(); err == nil && adapterInfo.LanIP != nil && !adapterInfo.LanIP.IsUnspecified() {
@@ -45,13 +85,7 @@ func (a *AppService) Connect(profileID string, mode string) error {
 		}
 	}
 
-	fullConfig, err := core.MergeCompleteConfig(profile.OutboundJSON, core.ConfigMergerOptions{
-		SocksPort:  settings.SocksPort,
-		HttpPort:   settings.HttpPort,
-		ApiPort:    10807,
-		DnsServers: dnsServers,
-		BindIP:     bindIP,
-	})
+	fullConfig, err := a.buildProfileConfig(profile, bindIP)
 	if err != nil {
 		a.log("Configuration build error: %v", err)
 		return fmt.Errorf("failed to build configuration: %w", err)
@@ -95,6 +129,15 @@ func (a *AppService) Connect(profileID string, mode string) error {
 	a.activeProfileID = profileID
 	a.activeMode = mode
 
+	if a.watchCancel != nil {
+		a.watchCancel()
+		a.watchCancel = nil
+	}
+	if mode == "tun" {
+		a.watchCtx, a.watchCancel = context.WithCancel(context.Background())
+		go a.startNetworkWatcher(a.watchCtx, profileID)
+	}
+
 	settings.SelectedProfileID = profileID
 	settings.Mode = mode
 	_ = a.store.UpdateSettings(settings)
@@ -133,6 +176,11 @@ func (a *AppService) Disconnect() error {
 
 	a.log("Disconnecting...")
 
+	if a.watchCancel != nil {
+		a.watchCancel()
+		a.watchCancel = nil
+	}
+
 	_ = sysproxy.ClearProxy()
 	_ = a.tunMgr.Stop()
 	_ = a.xrayMgr.Stop()
@@ -160,6 +208,11 @@ func (a *AppService) ResetNetwork() error {
 	defer a.mu.Unlock()
 
 	a.log("Resetting network: clearing system proxy and routing table...")
+
+	if a.watchCancel != nil {
+		a.watchCancel()
+		a.watchCancel = nil
+	}
 
 	_ = sysproxy.ClearProxy()
 	_ = a.tunMgr.CleanupStaleRoutes()

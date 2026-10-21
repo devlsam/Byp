@@ -210,20 +210,13 @@ func (a *AppService) UpdateProfile(profile storage.Profile) error {
 
 	if a.connected && a.activeProfileID == profile.ID {
 		a.log("Active profile updated - reloading connection...")
-		settings := a.store.GetSettings()
 		var bindIP string
 		if a.activeMode == "tun" {
 			if adapterInfo, err := a.tunMgr.GetPhysicalAdapterInfo(); err == nil && adapterInfo.LanIP != nil && !adapterInfo.LanIP.IsUnspecified() {
 				bindIP = adapterInfo.LanIP.String()
 			}
 		}
-		cfgJSON, err := core.MergeCompleteConfig(profile.OutboundJSON, core.ConfigMergerOptions{
-			SocksPort: settings.SocksPort,
-			HttpPort:  settings.HttpPort,
-			ApiPort:   10807,
-			BindIP:    bindIP,
-		})
-		if err == nil {
+		if cfgJSON, err := a.buildProfileConfig(&profile, bindIP); err == nil {
 			_ = a.xrayMgr.Start(cfgJSON)
 		}
 	}
