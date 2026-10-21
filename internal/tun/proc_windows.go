@@ -49,12 +49,19 @@ type cachedPortEntry struct {
 	expiresAt int64
 }
 
+const (
+	tcpStateClosed    = 1
+	tcpStateTimeWait  = 11
+	tcpStateDeleteTCB = 12
+)
+
 var (
 	procCache sync.Map // map[uint32]cachedProcess
 
 	portCacheMu       sync.RWMutex
 	portCache         = make(map[uint32]cachedPortEntry, 2048)
-	pidPortTable      = make(map[uint32]uint32, 2048) // key: (isUDP << 16) | srcPort -> val: pid
+	tcpPortTable      = make(map[uint16]uint32, 2048)
+	udpPortTable      = make(map[uint16]uint32, 1024)
 	lastTCPTableFetch int64
 	lastUDPTableFetch int64
 	tableRefreshMu    sync.Mutex
@@ -171,8 +178,21 @@ func querySocketTable(proc *windows.LazyProc, family uintptr, tableClass uintptr
 	return bufPtr, size
 }
 
-// refreshTCPTableSnapshot loads all active IPv4 and IPv6 TCP ports into pidPortTable at once.
+// ClearPortCache flushes cached process and port tables.
+func ClearPortCache() {
+	portCacheMu.Lock()
+	portCache = make(map[uint32]cachedPortEntry, 2048)
+	tcpPortTable = make(map[uint16]uint32, 2048)
+	udpPortTable = make(map[uint16]uint32, 1024)
+	lastTCPTableFetch = 0
+	lastUDPTableFetch = 0
+	portCacheMu.Unlock()
+}
+
+// refreshTCPTableSnapshot loads active TCP ports atomically.
 func refreshTCPTableSnapshot() {
+	newTable := make(map[uint16]uint32, 2048)
+
 	// 1. IPv4 TCP Table (sizeof(MIB_TCPROW_OWNER_PID) = 24)
 	if bufPtr, size := querySocketTable(procGetExtendedTcpTable, afInet, tcpTableOwnerPidAll); bufPtr != nil {
 		buf := (*bufPtr)[:size]
@@ -181,10 +201,13 @@ func refreshTCPTableSnapshot() {
 		const rowSize = 24
 		for i := uint32(0); i < numEntries && offset+rowSize <= len(buf); i++ {
 			row := buf[offset : offset+rowSize]
-			localPort := binary.BigEndian.Uint16(row[8:10])
-			pid := binary.LittleEndian.Uint32(row[20:24])
-			if localPort > 0 && pid > 0 {
-				pidPortTable[uint32(localPort)] = pid
+			state := binary.LittleEndian.Uint32(row[0:4])
+			if state != tcpStateClosed && state != tcpStateTimeWait && state != tcpStateDeleteTCB {
+				localPort := binary.BigEndian.Uint16(row[8:10])
+				pid := binary.LittleEndian.Uint32(row[20:24])
+				if localPort > 0 && pid > 0 {
+					newTable[localPort] = pid
+				}
 			}
 			offset += rowSize
 		}
@@ -199,23 +222,27 @@ func refreshTCPTableSnapshot() {
 		const rowSize = 56
 		for i := uint32(0); i < numEntries && offset+rowSize <= len(buf); i++ {
 			row := buf[offset : offset+rowSize]
-			localPort := binary.BigEndian.Uint16(row[20:22])
-			pid := binary.LittleEndian.Uint32(row[52:56])
-			if localPort > 0 && pid > 0 {
-				key := uint32(localPort)
-				if _, exists := pidPortTable[key]; !exists {
-					pidPortTable[key] = pid
+			state := binary.LittleEndian.Uint32(row[48:52])
+			if state != tcpStateClosed && state != tcpStateTimeWait && state != tcpStateDeleteTCB {
+				localPort := binary.BigEndian.Uint16(row[20:22])
+				pid := binary.LittleEndian.Uint32(row[52:56])
+				if localPort > 0 && pid > 0 {
+					if _, exists := newTable[localPort]; !exists {
+						newTable[localPort] = pid
+					}
 				}
 			}
 			offset += rowSize
 		}
 		tableBufPool.Put(bufPtr)
 	}
+
+	tcpPortTable = newTable
 }
 
-// refreshUDPTableSnapshot loads all active IPv4 and IPv6 UDP ports into pidPortTable at once.
+// refreshUDPTableSnapshot loads active UDP ports atomically.
 func refreshUDPTableSnapshot() {
-	const udpMask = uint32(1) << 16
+	newTable := make(map[uint16]uint32, 1024)
 
 	// 1. IPv4 UDP Table (sizeof(MIB_UDPROW_OWNER_PID) = 12)
 	if bufPtr, size := querySocketTable(procGetExtendedUdpTable, afInet, udpTableOwnerPid); bufPtr != nil {
@@ -228,7 +255,7 @@ func refreshUDPTableSnapshot() {
 			localPort := binary.BigEndian.Uint16(row[4:6])
 			pid := binary.LittleEndian.Uint32(row[8:12])
 			if localPort > 0 && pid > 0 {
-				pidPortTable[udpMask|uint32(localPort)] = pid
+				newTable[localPort] = pid
 			}
 			offset += rowSize
 		}
@@ -246,15 +273,58 @@ func refreshUDPTableSnapshot() {
 			localPort := binary.BigEndian.Uint16(row[20:22])
 			pid := binary.LittleEndian.Uint32(row[24:28])
 			if localPort > 0 && pid > 0 {
-				key := udpMask | uint32(localPort)
-				if _, exists := pidPortTable[key]; !exists {
-					pidPortTable[key] = pid
+				if _, exists := newTable[localPort]; !exists {
+					newTable[localPort] = pid
 				}
 			}
 			offset += rowSize
 		}
 		tableBufPool.Put(bufPtr)
 	}
+
+	udpPortTable = newTable
+}
+
+func lookupSocketPID(isUDP bool, port uint16) uint32 {
+	portCacheMu.RLock()
+	defer portCacheMu.RUnlock()
+	if isUDP {
+		return udpPortTable[port]
+	}
+	return tcpPortTable[port]
+}
+
+func lookupOrRefreshSocketPID(isUDP bool, port uint16, minInterval time.Duration) uint32 {
+	if pid := lookupSocketPID(isUDP, port); pid != 0 {
+		return pid
+	}
+
+	tableRefreshMu.Lock()
+	defer tableRefreshMu.Unlock()
+
+	if pid := lookupSocketPID(isUDP, port); pid != 0 {
+		return pid
+	}
+
+	now := time.Now().UnixNano()
+	minIntervalNs := int64(minInterval)
+
+	portCacheMu.Lock()
+	defer portCacheMu.Unlock()
+
+	if isUDP {
+		if now-lastUDPTableFetch >= minIntervalNs {
+			refreshUDPTableSnapshot()
+			lastUDPTableFetch = now
+		}
+		return udpPortTable[port]
+	}
+
+	if now-lastTCPTableFetch >= minIntervalNs {
+		refreshTCPTableSnapshot()
+		lastTCPTableFetch = now
+	}
+	return tcpPortTable[port]
 }
 
 func ResolveProcessByPort(network string, srcPort uint16) (exeName string, exePath string, pid uint32) {
@@ -262,62 +332,32 @@ func ResolveProcessByPort(network string, srcPort uint16) (exeName string, exePa
 		return "", "", 0
 	}
 
+	isUDP := strings.Contains(strings.ToLower(network), "udp")
 	var isUDPBit uint32
-	if strings.Contains(strings.ToLower(network), "udp") {
+	if isUDP {
 		isUDPBit = 1
 	}
 	cacheKey := (isUDPBit << 16) | uint32(srcPort)
-	nowNano := time.Now().UnixNano()
+	now := time.Now().UnixNano()
 
-	// 1. Fast path: Check resolved portCache OR bulk pidPortTable
 	portCacheMu.RLock()
 	entry, found := portCache[cacheKey]
-	if found && nowNano < entry.expiresAt {
+	if found && now < entry.expiresAt {
 		portCacheMu.RUnlock()
 		return entry.exeName, entry.exePath, entry.pid
 	}
-	cachedPID := pidPortTable[cacheKey]
 	portCacheMu.RUnlock()
 
-	// 2. If port was not in bulk table, refresh the bulk table (serialized with tableRefreshMu)
+	cachedPID := lookupOrRefreshSocketPID(isUDP, srcPort, 25*time.Millisecond)
 	if cachedPID == 0 {
-		tableRefreshMu.Lock()
-		// Double-check after acquiring refresh lock in case another goroutine just refreshed it
-		portCacheMu.RLock()
-		cachedPID = pidPortTable[cacheKey]
-		portCacheMu.RUnlock()
-
-		nowNano = time.Now().UnixNano()
-		// Throttle kernel table refreshes if many unknown ports arrive at the exact same microsecond
-		const minRefreshInterval = int64(15 * time.Millisecond)
-
-		if cachedPID == 0 {
-			if isUDPBit == 1 {
-				if nowNano-lastUDPTableFetch >= minRefreshInterval {
-					portCacheMu.Lock()
-					refreshUDPTableSnapshot()
-					cachedPID = pidPortTable[cacheKey]
-					lastUDPTableFetch = nowNano
-					portCacheMu.Unlock()
-				}
-			} else {
-				if nowNano-lastTCPTableFetch >= minRefreshInterval {
-					portCacheMu.Lock()
-					refreshTCPTableSnapshot()
-					cachedPID = pidPortTable[cacheKey]
-					lastTCPTableFetch = nowNano
-					portCacheMu.Unlock()
-				}
-			}
-		}
-		tableRefreshMu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		cachedPID = lookupOrRefreshSocketPID(isUDP, srcPort, 0)
 	}
 
 	if cachedPID == 0 {
-		// Negative cache missing port briefly (1500ms) to prevent repeated scans on dead/ephemeral sockets
 		portCacheMu.Lock()
 		portCache[cacheKey] = cachedPortEntry{
-			expiresAt: nowNano + int64(1500*time.Millisecond),
+			expiresAt: now + int64(300*time.Millisecond),
 		}
 		portCacheMu.Unlock()
 		return "", "", 0
@@ -328,7 +368,7 @@ func ResolveProcessByPort(network string, srcPort uint16) (exeName string, exePa
 	portCacheMu.Lock()
 	if len(portCache) > 4096 {
 		for k, v := range portCache {
-			if nowNano >= v.expiresAt {
+			if now >= v.expiresAt {
 				delete(portCache, k)
 			}
 		}
@@ -337,7 +377,7 @@ func ResolveProcessByPort(network string, srcPort uint16) (exeName string, exePa
 		exeName:   exeName,
 		exePath:   exePath,
 		pid:       cachedPID,
-		expiresAt: nowNano + int64(10*time.Second),
+		expiresAt: now + int64(3*time.Second),
 	}
 	portCacheMu.Unlock()
 
