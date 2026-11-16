@@ -1,12 +1,61 @@
 import React, { useState, useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Events, Updater, Browser } from '@wailsio/runtime';
 import { Settings as SettingsIcon, Check, Zap, Globe, Sparkles, RefreshCw, ArrowDown, Github, ChevronRight } from '../../icons';
 import { DNS_PRESETS } from '../../constants/presets';
 import { AppService } from '../../../bindings/changeme';
+import type { UpdateInfo } from '../../../bindings/changeme/models';
 import type { Settings } from '../../../bindings/changeme/internal/storage/models';
 import type { DnsPreset } from '../../types';
 import { toast } from '../../Toaster';
 import { loading } from '../../LoadingOverlay';
+import { MonochromeSwitchVisual, PrecisionTrackControl } from './tun/TunPrimitives';
+
+const UPDATE_INTERVAL_PRESETS = [
+  { value: 1, label: '1h' },
+  { value: 4, label: '4h', hint: 'Std' },
+  { value: 12, label: '12h' },
+  { value: 24, label: '24h' },
+];
+
+interface SettingsSwitchRowProps {
+  title: string;
+  description: string;
+  badge?: string;
+  enabled: boolean;
+  onToggle: () => void;
+  embedded?: boolean;
+}
+
+const SettingsSwitchRow: React.FC<SettingsSwitchRowProps> = React.memo(
+  ({ title, description, badge, enabled, onToggle, embedded = false }) => (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={onToggle}
+      className={`contain-row w-full text-left flex items-center justify-between gap-3 p-3 cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 ${
+        embedded
+          ? 'hover:bg-white/[0.03] focus-visible:ring-inset'
+          : 'rounded-xl bg-[#121317] border border-white/5 hover:border-white/15'
+      }`}
+    >
+      <div className="min-w-0 space-y-0.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[11px] font-semibold text-white truncate">{title}</span>
+          {badge && (
+            <span className="text-[9px] font-mono px-1.5 py-[1px] rounded bg-white/10 text-zinc-200 border border-white/10 shrink-0 whitespace-nowrap">
+              {badge}
+            </span>
+          )}
+        </div>
+        <div className="text-[10px] text-zinc-400 leading-snug">{description}</div>
+      </div>
+      <MonochromeSwitchVisual enabled={enabled} />
+    </button>
+  )
+);
+SettingsSwitchRow.displayName = 'SettingsSwitchRow';
 
 interface SettingsTabProps {
   settings: Settings;
@@ -19,6 +68,9 @@ interface SettingsTabProps {
   setSecondaryDns: (val: string) => void;
   onToggleAutoStart: () => void;
   onToggleAutoConnect: () => void;
+  onToggleAutoCheckUpdates: () => void;
+  onChangeAutoCheckHours: (hours: number) => void;
+  availableUpdate?: UpdateInfo | null;
   onSelectDnsPreset: (preset: DnsPreset) => void;
   onSaveCustomDns: () => void;
 }
@@ -37,9 +89,17 @@ export const SettingsTab: React.FC<SettingsTabProps> = React.memo(({
   setSecondaryDns,
   onToggleAutoStart,
   onToggleAutoConnect,
+  onToggleAutoCheckUpdates,
+  onChangeAutoCheckHours,
+  availableUpdate,
   onSelectDnsPreset,
   onSaveCustomDns,
 }) => {
+  const autoCheckEnabled = settings.autoCheckUpdates ?? true;
+  const autoCheckHours =
+    settings.autoCheckUpdateHours >= 1 && settings.autoCheckUpdateHours <= 24
+      ? settings.autoCheckUpdateHours
+      : 4;
   const [appVersion, setAppVersion] = useState<string>('1.0.0');
   const [isChecking, setIsChecking] = useState<boolean>(false);
   const [isUpdating, setIsUpdating] = useState<boolean>(false);
@@ -60,6 +120,18 @@ export const SettingsTab: React.FC<SettingsTabProps> = React.memo(({
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!availableUpdate?.available) return;
+    setUpdateStatus((prev) => {
+      if (prev?.type === 'downloading' || prev?.type === 'ready') return prev;
+      return {
+        type: 'available',
+        message: `New version ${availableUpdate.version} is available!`,
+        version: availableUpdate.version,
+      };
+    });
+  }, [availableUpdate]);
 
   useEffect(() => {
     const unProg = Events.On(Updater.Events.DownloadProgress, (e: any) => {
@@ -208,73 +280,21 @@ export const SettingsTab: React.FC<SettingsTabProps> = React.memo(({
 
         <div className="space-y-2">
           {/* 1. Start with Windows */}
-          <div
-            onClick={onToggleAutoStart}
-            className="contain-row flex items-center justify-between p-3 rounded-xl bg-[#121317] border border-white/5 hover:border-white/15 cursor-pointer"
-          >
-            <div className="space-y-0.5 pr-2">
-              <div className="flex items-center space-x-2">
-                <span className="text-[11px] font-semibold text-white">
-                  Start with Windows
-                </span>
-                <span className="text-[9px] px-1.5 py-0.2 rounded bg-white/10 text-zinc-300 border border-white/10">
-                  Default: ON
-                </span>
-              </div>
-              <div className="text-[10px] text-zinc-400">
-                Launch client automatically on system boot (Starts minimized to Tray)
-              </div>
-            </div>
-            <div
-              className={`w-9 h-5 rounded-full border flex items-center justify-start px-0.5 shrink-0 ${
-                (settings.autoStart ?? true)
-                  ? 'bg-white border-white/80 shadow-[0_0_10px_rgba(255,255,255,0.25)]'
-                  : 'bg-white/10 border-white/15'
-              }`}
-            >
-              <div
-                className={`w-4 h-4 rounded-full will-change-transform transition-transform duration-150 flex items-center justify-center ${
-                  (settings.autoStart ?? true) ? 'translate-x-4 bg-black shadow' : 'translate-x-0 bg-zinc-500'
-                }`}
-              >
-                {(settings.autoStart ?? true) && (
-                  <Check className="w-2.5 h-2.5 text-white stroke-[3]" />
-                )}
-              </div>
-            </div>
-          </div>
+          <SettingsSwitchRow
+            title="Start with Windows"
+            badge="Default: ON"
+            description="Launch client automatically on system boot (Starts minimized to Tray)"
+            enabled={settings.autoStart ?? true}
+            onToggle={onToggleAutoStart}
+          />
 
           {/* 2. Auto-Connect on Launch */}
-          <div
-            onClick={onToggleAutoConnect}
-            className="contain-row flex items-center justify-between p-3 rounded-xl bg-[#121317] border border-white/5 hover:border-white/15 cursor-pointer"
-          >
-            <div className="space-y-0.5 pr-2">
-              <div className="text-[11px] font-semibold text-white">
-                Auto-Connect on Launch
-              </div>
-              <div className="text-[10px] text-zinc-400">
-                Automatically initiate connection to active profile when client opens
-              </div>
-            </div>
-            <div
-              className={`w-9 h-5 rounded-full border flex items-center justify-start px-0.5 shrink-0 ${
-                settings.autoConnect
-                  ? 'bg-white border-white/80 shadow-[0_0_10px_rgba(255,255,255,0.25)]'
-                  : 'bg-white/10 border-white/15'
-              }`}
-            >
-              <div
-                className={`w-4 h-4 rounded-full will-change-transform transition-transform duration-150 flex items-center justify-center ${
-                  settings.autoConnect ? 'translate-x-4 bg-black shadow' : 'translate-x-0 bg-zinc-500'
-                }`}
-              >
-                {settings.autoConnect && (
-                  <Check className="w-2.5 h-2.5 text-white stroke-[3]" />
-                )}
-              </div>
-            </div>
-          </div>
+          <SettingsSwitchRow
+            title="Auto-Connect on Launch"
+            description="Automatically initiate connection to active profile when client opens"
+            enabled={Boolean(settings.autoConnect)}
+            onToggle={onToggleAutoConnect}
+          />
 
           {/* 3. Performance Mode Trigger */}
           <div className="flex items-center justify-between p-3 rounded-xl bg-[#121317] border border-white/10">
@@ -432,8 +452,47 @@ export const SettingsTab: React.FC<SettingsTabProps> = React.memo(({
         </div>
 
         <p className="text-[11px] text-zinc-400">
-          Automatically checks GitHub Releases for new desktop client versions.
+          Checks GitHub Releases for new desktop client versions and triggers update alerts.
         </p>
+
+        <div className="rounded-xl bg-[#121317] border border-white/[0.06] divide-y divide-white/[0.06] overflow-hidden">
+          <SettingsSwitchRow
+            embedded
+            title="Periodic Auto-Check"
+            badge={autoCheckEnabled ? `Every ${autoCheckHours}h` : 'Off'}
+            description="Background update checks while running. Startup alerts & manual checks stay active."
+            enabled={autoCheckEnabled}
+            onToggle={onToggleAutoCheckUpdates}
+          />
+
+          <AnimatePresence initial={false}>
+            {autoCheckEnabled && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.16, ease: 'easeOut' }}
+                className="overflow-hidden"
+              >
+                <div className="p-2.5 bg-[#0b0c10]">
+                  <PrecisionTrackControl
+                    embedded
+                    label="Check Interval"
+                    ariaLabel="Auto update check interval in hours"
+                    value={autoCheckHours}
+                    min={1}
+                    max={24}
+                    presets={UPDATE_INTERVAL_PRESETS}
+                    headerRight={
+                      <span className="text-[9px] font-mono text-zinc-400">hours (1–24h)</span>
+                    }
+                    onCommit={onChangeAutoCheckHours}
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
         {skippedVersion && (
           <div className="flex items-center justify-between p-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-[11px]">
