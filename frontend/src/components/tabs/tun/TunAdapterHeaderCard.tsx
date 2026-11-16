@@ -99,7 +99,7 @@ export const TunAdapterHeaderCard: React.FC<TunAdapterHeaderCardProps> = React.m
       <div ref={containerRef} className="relative z-30 shrink-0">
         <div className="modern-surface rounded-2xl border border-white/10">
           {/* Interactive Adapter & Engine Row */}
-          <div className="flex items-center justify-between gap-2 p-3">
+          <div className="flex items-center justify-between gap-2 px-3 py-2.5">
             <button
               type="button"
               aria-expanded={isMenuOpen}
@@ -141,7 +141,7 @@ export const TunAdapterHeaderCard: React.FC<TunAdapterHeaderCardProps> = React.m
                         : `BYP-TUN Active · MTU ${currentMtu}`
                       : !isTunMode
                       ? `${mode.toUpperCase()} Mode · MTU ${currentMtu}`
-                      : `BYP-TUN Standby · MTU ${currentMtu} · ${activeCore.tagline}`}
+                      : `BYP-TUN Standby · MTU ${currentMtu}`}
                   </div>
                 </div>
               </div>
@@ -170,7 +170,7 @@ export const TunAdapterHeaderCard: React.FC<TunAdapterHeaderCardProps> = React.m
 
           {/* Minimal HUD Telemetry (only when Zeltun is running live) */}
           {showZeltunTelemetry && tunStats && (
-            <div className="px-3 pb-3 pt-2 border-t border-white/[0.08] space-y-1.5">
+            <div className="px-3 pb-2 pt-1.5 border-t border-white/[0.08] space-y-1">
               <div className="flex items-center justify-between gap-2 text-[10px] font-mono tabular-nums">
                 <div className="text-white font-semibold truncate">
                   {formatCompactBytes(tunStats.rxBytes)}{' '}
@@ -185,7 +185,7 @@ export const TunAdapterHeaderCard: React.FC<TunAdapterHeaderCardProps> = React.m
                 </div>
               </div>
 
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <div className="h-[2px] w-full rounded-full bg-white/15 overflow-hidden">
                   <div
                     className="h-full bg-white transition-[width] duration-300 shadow-[0_0_6px_rgba(255,255,255,0.6)]"

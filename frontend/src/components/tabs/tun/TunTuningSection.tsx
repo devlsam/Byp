@@ -59,7 +59,7 @@ export const TunTuningSection: React.FC<TunTuningSectionProps> = React.memo(
     );
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <PrecisionTrackControl
           label="Adapter MTU"
           ariaLabel="Adapter MTU"
@@ -78,7 +78,7 @@ export const TunTuningSection: React.FC<TunTuningSectionProps> = React.memo(
 
         {/* Unified Buffer & UDP Session Panel */}
         <div className="rounded-xl bg-[#121317] border border-white/[0.06] divide-y divide-white/[0.06] overflow-hidden">
-          <div className="px-3 py-2 flex items-center justify-between gap-3">
+          <div className="px-3 py-1.5 flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-[11px] font-semibold text-white">WinTUN Ring Buffer</div>
               <div className="text-[9.5px] text-zinc-400">Queue capacity</div>
@@ -94,7 +94,7 @@ export const TunTuningSection: React.FC<TunTuningSectionProps> = React.memo(
             </div>
           </div>
 
-          <div className="px-3 py-2 space-y-1.5">
+          <div className="px-3 py-1.5 space-y-1">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-white">UDP Session Timeout</span>
               <span className="text-[9.5px] text-zinc-400">Idle NAT reclaim</span>

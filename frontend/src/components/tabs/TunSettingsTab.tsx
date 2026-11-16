@@ -134,7 +134,7 @@ export const TunSettingsTab: React.FC<TunSettingsTabProps> = React.memo(
     const activeSectionIdx = SECTION_TABS.findIndex((t) => t.id === activeSection);
 
     return (
-      <div className="flex-1 min-h-0 flex flex-col p-3.5 space-y-2.5 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col px-3.5 py-2.5 space-y-2 overflow-hidden">
         {/* Clean Fixed Header */}
         <div className="flex items-center justify-between gap-2 shrink-0">
           <h2 className="text-sm font-semibold text-white tracking-tight flex items-center gap-2">
@@ -172,7 +172,7 @@ export const TunSettingsTab: React.FC<TunSettingsTabProps> = React.memo(
 
         {/* Clean Simple Profile Pill Strip (Zeltun) */}
         {activeEngine === 'zeltun' && (
-          <div className="space-y-1.5 shrink-0">
+          <div className="space-y-1 shrink-0">
             <div className="flex items-center justify-between px-1">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
                 Profile
@@ -225,7 +225,7 @@ export const TunSettingsTab: React.FC<TunSettingsTabProps> = React.memo(
                         tabIndex={isSelected ? 0 : -1}
                         onClick={() => setActiveSection(tab.id)}
                         onKeyDown={(e) => handleTabKeyDown(e, idx)}
-                        className={`relative z-10 py-2.5 px-1.5 flex items-center justify-center text-[10.5px] font-semibold cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/40 transition-colors duration-150 ${
+                        className={`relative z-10 py-2 px-1.5 flex items-center justify-center text-[10.5px] font-semibold cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/40 transition-colors duration-150 ${
                           isSelected ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
@@ -316,10 +316,13 @@ export const TunSettingsTab: React.FC<TunSettingsTabProps> = React.memo(
         </div>
 
         {/* Beginner Guidance Footer */}
-        <p className="flex items-center justify-center gap-1.5 px-1 text-center text-[10px] text-zinc-500 leading-snug shrink-0">
-          <Info className="w-3 h-3 shrink-0" />
-          <span>No technical or coding background? Use default settings.</span>
-        </p>
+        <div className="shrink-0 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/[0.025] border border-white/[0.06] text-[10px] text-zinc-400 leading-snug text-center">
+          <Info className="w-3 h-3 text-zinc-400 shrink-0" />
+          <p>
+            No technical or coding background? Use{' '}
+            <span className="text-zinc-200 font-medium">default settings</span>.
+          </p>
+        </div>
       </div>
     );
   }

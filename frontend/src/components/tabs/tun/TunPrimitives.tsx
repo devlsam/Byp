@@ -292,8 +292,8 @@ export const PrecisionTrackControl: React.FC<PrecisionTrackControlProps> = React
       <div
         className={
           embedded
-            ? 'space-y-2'
-            : 'p-2.5 rounded-xl bg-[#121317] border border-white/[0.06] space-y-2'
+            ? 'space-y-1.5'
+            : 'px-2.5 py-2 rounded-xl bg-[#121317] border border-white/[0.06] space-y-1.5'
         }
       >
         <div className="flex items-center justify-between gap-2">
