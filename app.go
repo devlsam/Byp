@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -48,15 +49,14 @@ func (a *AppService) ServiceStartup(ctx context.Context, options application.Ser
 	a.app = application.Get()
 	a.log("Application started (Wails v3)")
 
-	// Clean up any lingering proxy settings or orphaned routes from previous sessions
+	// Ensure wintun.dll is available on disk before cleaning stale TUN/Zeltun state
+	_ = a.tunMgr.EnsureWintunDLL()
 	_ = sysproxy.ClearProxy()
 	_ = a.tunMgr.CleanupStaleRoutes()
 
-	// Ensure wintun.dll is available on disk
-	_ = a.tunMgr.EnsureWintunDLL()
-
-	// Apply auto-start configuration if enabled
+	// Apply auto-start and initial TUN options configuration
 	initialSettings := a.store.GetSettings()
+	a.tunMgr.SetZeltunOptions(tunOptionsFromSettings(initialSettings))
 	if initialSettings.AutoStart && a.app != nil && a.app.Autostart != nil {
 		_ = a.app.Autostart.Enable()
 	}
@@ -70,6 +70,9 @@ func (a *AppService) ServiceStartup(ctx context.Context, options application.Ser
 func (a *AppService) ServiceShutdown() error {
 	a.log("Shutting down - cleaning up proxies and TUN routes")
 	_ = a.Disconnect()
+	if a.store != nil {
+		_ = a.store.Flush()
+	}
 	return nil
 }
 
@@ -98,6 +101,10 @@ func (a *AppService) statsLoop() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	var lastTraffic core.TrafficStats
+	var lastTunStats tun.ZeltunStats
+	hasLastTun := false
+
 	for {
 		select {
 		case <-a.ctx.Done():
@@ -108,7 +115,14 @@ func (a *AppService) statsLoop() {
 			a.mu.RUnlock()
 
 			if !isConnected {
+				lastTraffic = core.TrafficStats{}
+				hasLastTun = false
 				continue
+			}
+
+			// Drain native Zeltun log ring buffer into Go stdout instead of flooding WebView2 IPC.
+			for _, msg := range a.tunMgr.PollZeltunLogs() {
+				log.Printf("[Zeltun] %s", msg)
 			}
 
 			// Don't query gRPC or wake up WebView2 JS thread if window is hidden in tray
@@ -118,9 +132,18 @@ func (a *AppService) statsLoop() {
 				}
 			}
 
-			stats, err := a.xrayMgr.QueryTrafficStats(10807)
-			if err == nil && a.app != nil {
-				a.app.Event.Emit("traffic:update", stats)
+			if stats, err := a.xrayMgr.QueryTrafficStats(10807); err == nil && a.app != nil {
+				if stats != lastTraffic {
+					lastTraffic = stats
+					a.app.Event.Emit("traffic:update", stats)
+				}
+			}
+			if tunStats, ok := a.tunMgr.GetZeltunStats(); ok && a.app != nil {
+				if !hasLastTun || tunStats != lastTunStats {
+					lastTunStats = tunStats
+					hasLastTun = true
+					a.app.Event.Emit("tun:stats", tunStats)
+				}
 			}
 		}
 	}
