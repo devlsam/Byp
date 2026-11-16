@@ -20,6 +20,9 @@ import (
 //go:embed assets/wintun.dll
 var wintunBytes []byte
 
+//go:embed assets/zeltun.dll
+var zeltunBytes []byte
+
 const (
 	TunInterfaceName = "BYP-TUN"
 	// Use RFC 2544 benchmark transit subnet (standard for modern proxy clients like Clash and Sing-box)
@@ -58,14 +61,17 @@ type PhysicalAdapterInfo struct {
 }
 
 type TunManager struct {
-	mu              sync.Mutex
-	running         bool
-	addedRoutes     []string // List of server IPs that have static routes
-	activeGateway   string
-	physicalLanIP   net.IP
-	physicalIfIndex int
-	splitMode       string
-	splitApps       []string
+	mu                   sync.Mutex
+	running              bool
+	activeEngine         string
+	activeUpstreamTarget string
+	addedRoutes          []string // List of server IPs that have static routes
+	activeGateway        string
+	physicalLanIP        net.IP
+	physicalIfIndex      int
+	splitMode            string
+	splitApps            []string
+	zeltunOpts           ZeltunOptions
 }
 
 func NewTunManager() *TunManager {
@@ -73,56 +79,54 @@ func NewTunManager() *TunManager {
 		addedRoutes: []string{},
 		splitMode:   "all",
 		splitApps:   []string{},
+		zeltunOpts:  DefaultZeltunOptions(),
 	}
 }
 
-// EnsureWintunDLL ensures that the embedded wintun.dll is extracted to disk and loadable.
-// It checks next to the executable, in CWD, and in LocalAppData, extracting if missing or corrupted,
-// and registers the directory in the Windows DLL search path via SetDllDirectory.
-func EnsureWintunDLL() error {
+// ensureEmbeddedDLL ensures an embedded DLL is written to disk and returns its path.
+func ensureEmbeddedDLL(filename string, embedded []byte, registerDllDir bool) (string, error) {
 	var candidates []string
-
-	// 1. Target next to the executable
 	if exePath, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exePath), "wintun.dll"))
+		candidates = append(candidates, filepath.Join(filepath.Dir(exePath), filename))
 	}
-
-	// 2. Target in current working directory
 	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(cwd, "wintun.dll"))
+		candidates = append(candidates, filepath.Join(cwd, filename))
 	}
-
-	// 3. Target in LocalAppData\Byp (safe fallback if exe is in read-only location)
 	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
 		bypDir := filepath.Join(localAppData, "Byp")
 		_ = os.MkdirAll(bypDir, 0755)
-		candidates = append(candidates, filepath.Join(bypDir, "wintun.dll"))
+		candidates = append(candidates, filepath.Join(bypDir, filename))
 	}
 
-	var validPath string
 	for _, p := range candidates {
 		info, err := os.Stat(p)
-		if err == nil && info.Size() == int64(len(wintunBytes)) {
-			validPath = p
-			break
+		if err == nil && info.Size() == int64(len(embedded)) {
+			if registerDllDir {
+				_ = windows.SetDllDirectory(filepath.Dir(p))
+			}
+			return p, nil
 		}
-
-		// File is missing or incorrect size -> extract embedded bytes
-		dir := filepath.Dir(p)
-		_ = os.MkdirAll(dir, 0755)
-		if err := os.WriteFile(p, wintunBytes, 0755); err == nil {
-			validPath = p
-			break
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		if err := os.WriteFile(p, embedded, 0755); err == nil {
+			if registerDllDir {
+				_ = windows.SetDllDirectory(filepath.Dir(p))
+			}
+			return p, nil
 		}
 	}
 
-	if validPath != "" {
-		dir := filepath.Dir(validPath)
-		_ = windows.SetDllDirectory(dir)
-		return nil
-	}
+	return "", fmt.Errorf("failed to extract embedded %s to any suitable path", filename)
+}
 
-	return fmt.Errorf("failed to extract embedded wintun.dll to any suitable path")
+// EnsureWintunDLL ensures that the embedded wintun.dll is extracted to disk and loadable.
+func EnsureWintunDLL() error {
+	_, err := ensureEmbeddedDLL("wintun.dll", wintunBytes, true)
+	return err
+}
+
+// EnsureZeltunDLL ensures that the embedded zeltun.dll is extracted to disk cleanly.
+func EnsureZeltunDLL() (string, error) {
+	return ensureEmbeddedDLL("zeltun.dll", zeltunBytes, false)
 }
 
 // EnsureWintunDLL method wrapper for TunManager
@@ -181,8 +185,11 @@ func (t *TunManager) getPhysicalAdapterInfo() (PhysicalAdapterInfo, error) {
 				continue
 			}
 
-			// Ignore virtual VPN gateways
-			if strings.HasPrefix(gw, "10.255.") || strings.HasPrefix(gw, "172.19.") || strings.HasPrefix(gw, "198.18.") {
+			// Ignore virtual VPN gateways and transit subnets
+			if strings.HasPrefix(gw, "10.255.") || strings.HasPrefix(gw, "172.19.") || strings.HasPrefix(gw, "198.18.") || strings.HasPrefix(gw, "198.19.") {
+				continue
+			}
+			if strings.HasPrefix(iface, "198.18.") || strings.HasPrefix(iface, "198.19.") {
 				continue
 			}
 
@@ -218,6 +225,35 @@ func (t *TunManager) getPhysicalAdapterInfo() (PhysicalAdapterInfo, error) {
 	}, nil
 }
 
+// SetZeltunOptions stores TUN engine options and applies live updates when Zeltun is active.
+func (t *TunManager) SetZeltunOptions(opts ZeltunOptions) {
+	opts = opts.Normalize()
+	t.mu.Lock()
+	t.zeltunOpts = opts
+	runningZeltun := t.running && t.activeEngine == EngineZeltun
+	t.mu.Unlock()
+
+	if runningZeltun {
+		if z, err := getZeltunBridge(); err == nil {
+			_ = z.SetOptions(opts)
+		}
+	}
+}
+
+// UpdateDNS applies Primary/Secondary DNS resolvers dynamically to the running TUN core.
+func (t *TunManager) UpdateDNS(primary, secondary string) {
+	t.mu.Lock()
+	runningZeltun := t.running && t.activeEngine == EngineZeltun
+	nrpt := t.zeltunOpts.EnableNrpt
+	t.mu.Unlock()
+
+	if runningZeltun {
+		if z, err := getZeltunBridge(); err == nil {
+			_ = z.SetDNS(primary, secondary, nrpt)
+		}
+	}
+}
+
 // UpdateSplitConfig updates split tunneling rules dynamically.
 func (t *TunManager) UpdateSplitConfig(mode string, apps []string) {
 	t.mu.Lock()
@@ -225,6 +261,12 @@ func (t *TunManager) UpdateSplitConfig(mode string, apps []string) {
 
 	t.splitMode = mode
 	t.splitApps = apps
+	if t.running && t.activeEngine == EngineZeltun {
+		if z, err := getZeltunBridge(); err == nil {
+			_ = z.SetRules(mode, apps)
+		}
+		return
+	}
 	ClearPortCache()
 	SetGlobalSplitConfig(mode, apps, t.physicalLanIP, t.physicalIfIndex)
 }
@@ -235,6 +277,20 @@ func (t *TunManager) UpdatePhysicalAdapter(newGateway string, newLanIP net.IP, n
 	defer t.mu.Unlock()
 
 	if !t.running {
+		return
+	}
+
+	if t.activeEngine == EngineZeltun {
+		t.activeGateway = newGateway
+		t.physicalLanIP = newLanIP
+		t.physicalIfIndex = newIfIndex
+		if z, err := getZeltunBridge(); err == nil {
+			lanStr := ""
+			if newLanIP != nil {
+				lanStr = newLanIP.String()
+			}
+			_ = z.UpdatePhysicalIf(newIfIndex, newGateway, lanStr)
+		}
 		return
 	}
 
@@ -254,34 +310,81 @@ func (t *TunManager) UpdatePhysicalAdapter(newGateway string, newLanIP net.IP, n
 	ClearPortCache()
 }
 
-// Start activates the TUN mode interface, anti-routing loop routes, Per-App router, and tun2socks engine
+func resolveServerIPs(serverHost string) []string {
+	var serverIPs []string
+	if serverHost == "" {
+		return serverIPs
+	}
+	if net.ParseIP(serverHost) != nil {
+		return []string{serverHost}
+	}
+	ips, err := net.LookupIP(serverHost)
+	if err != nil {
+		return serverIPs
+	}
+	seen := make(map[string]bool)
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			s := v4.String()
+			if !seen[s] {
+				seen[s] = true
+				serverIPs = append(serverIPs, s)
+			}
+		}
+	}
+	return serverIPs
+}
+
+func applyZeltunBypassIPs(z *zeltunBridge, serverIPs []string) {
+	_ = z.ClearBypassIPs()
+	for _, ip := range serverIPs {
+		_ = z.AddBypassIP(ip)
+	}
+}
+
+// Start activates the TUN mode interface using loopback SOCKS5 on socksPort.
 func (t *TunManager) Start(serverHost string, socksPort int, splitMode string, splitApps []string, dnsPrimary, dnsSecondary string) error {
+	return t.StartWithUpstream(serverHost, "127.0.0.1", socksPort, splitMode, splitApps, dnsPrimary, dnsSecondary)
+}
+
+// StartWithUpstream activates the TUN interface targeting any configured SOCKS5 host:port.
+func (t *TunManager) StartWithUpstream(serverHost, socksHost string, socksPort int, splitMode string, splitApps []string, dnsPrimary, dnsSecondary string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	resolvedSocksIP, socksTarget, socksIsPublic, err := ResolveUpstreamTarget(socksHost, socksPort)
+	if err != nil {
+		return err
+	}
+
+	opts := t.zeltunOpts.Normalize()
 	if t.running {
-		return nil
+		if t.activeEngine == EngineZeltun && opts.Engine == EngineZeltun && t.activeUpstreamTarget == socksTarget {
+			if z, err := getZeltunBridge(); err == nil {
+				serverIPs := resolveServerIPs(serverHost)
+				if socksIsPublic {
+					serverIPs = appendUniqueString(serverIPs, resolvedSocksIP)
+				}
+				applyZeltunBypassIPs(z, serverIPs)
+				_ = z.SetDNS(dnsPrimary, dnsSecondary, opts.EnableNrpt)
+				_ = z.SetOptions(opts)
+				_ = z.SetRules(splitMode, splitApps)
+				_ = z.SetSocks(socksTarget)
+				t.splitMode = splitMode
+				t.splitApps = splitApps
+			}
+			return nil
+		}
+		_ = t.stopLocked()
 	}
 
 	if err := t.EnsureWintunDLL(); err != nil {
 		return err
 	}
 
-	// 1. Resolve server host IPs to prevent routing loops
-	var serverIPs []string
-	if serverHost != "" {
-		if net.ParseIP(serverHost) != nil {
-			serverIPs = append(serverIPs, serverHost)
-		} else {
-			ips, err := net.LookupIP(serverHost)
-			if err == nil {
-				for _, ip := range ips {
-					if ip.To4() != nil {
-						serverIPs = append(serverIPs, ip.String())
-					}
-				}
-			}
-		}
+	serverIPs := resolveServerIPs(serverHost)
+	if socksIsPublic {
+		serverIPs = appendUniqueString(serverIPs, resolvedSocksIP)
 	}
 
 	// 2. Find physical gateway and adapter info for anti-loop static bypass
@@ -295,11 +398,38 @@ func (t *TunManager) Start(serverHost string, socksPort int, splitMode string, s
 	t.splitMode = splitMode
 	t.splitApps = splitApps
 
-	// Configure our custom Per-App split router with physical adapter binding
+	if opts.Engine == EngineZeltun {
+		z, err := getZeltunBridge()
+		if err != nil {
+			return err
+		}
+		applyZeltunBypassIPs(z, serverIPs)
+		lanStr := ""
+		if adapterInfo.LanIP != nil {
+			lanStr = adapterInfo.LanIP.String()
+		}
+		_ = z.UpdatePhysicalIf(adapterInfo.InterfaceIndex, adapterInfo.Gateway, lanStr)
+		if err := z.ConfigureAdapter(TunInterfaceName, TunIP, TunGateway, opts.MTU); err != nil {
+			return err
+		}
+		if err := z.SetDNS(dnsPrimary, dnsSecondary, opts.EnableNrpt); err != nil {
+			return err
+		}
+		_ = z.SetOptions(opts)
+		_ = z.SetRules(splitMode, splitApps)
+		if err := z.Start(socksTarget, uint32(adapterInfo.InterfaceIndex), opts.RingMB); err != nil {
+			return err
+		}
+		t.activeEngine = EngineZeltun
+		t.activeUpstreamTarget = socksTarget
+		t.running = true
+		return nil
+	}
+
+	// Legacy tun2socks path
 	SetGlobalSplitConfig(splitMode, splitApps, adapterInfo.LanIP, adapterInfo.InterfaceIndex)
 
 	// Add static bypass route for each resolved server IP through physical gateway (metric 1)
-	// This is the absolute guarantee against routing loops!
 	seenIP := make(map[string]bool)
 	for _, sIP := range serverIPs {
 		if sIP == "" || seenIP[sIP] {
@@ -311,13 +441,16 @@ func (t *TunManager) Start(serverHost string, socksPort int, splitMode string, s
 		t.addedRoutes = append(t.addedRoutes, sIP)
 	}
 
-	// 3. Configure and start tun2socks engine with custom Per-App split router
-	proxyURL := fmt.Sprintf("split-router://127.0.0.1:%d", socksPort)
+	tunMtu := opts.MTU
+	if tunMtu <= 0 {
+		tunMtu = 9000
+	}
+	proxyURL := fmt.Sprintf("split-router://%s", socksTarget)
 	key := &engine.Key{
 		Device:   TunInterfaceName,
 		Proxy:    proxyURL,
-		MTU:      9000,
-		LogLevel: "silent", // Zero console log I/O overhead
+		MTU:      tunMtu,
+		LogLevel: "silent",
 	}
 
 	engine.Insert(key)
@@ -369,16 +502,85 @@ func (t *TunManager) Start(serverHost string, socksPort int, splitMode string, s
 	_ = silentCommand("route", "add", "0.0.0.0", "mask", "128.0.0.0", TunGateway, "metric", "5").Run()
 	_ = silentCommand("route", "add", "128.0.0.0", "mask", "128.0.0.0", TunGateway, "metric", "5").Run()
 
+	t.activeEngine = EngineTun2Socks
+	t.activeUpstreamTarget = socksTarget
 	t.running = true
 	return nil
 }
 
-// Stop deactivates TUN mode, clears routing table entries, and stops tun2socks
+func appendUniqueString(slice []string, item string) []string {
+	if item == "" {
+		return slice
+	}
+	for _, existing := range slice {
+		if existing == item {
+			return slice
+		}
+	}
+	return append(slice, item)
+}
+
+// PollZeltunLogs drains buffered log lines emitted by the native Zeltun core.
+func (t *TunManager) PollZeltunLogs() []string {
+	t.mu.Lock()
+	isZeltun := t.activeEngine == EngineZeltun
+	t.mu.Unlock()
+	if !isZeltun {
+		return nil
+	}
+	z, err := getZeltunBridge()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for i := 0; i < 32; i++ {
+		_, msg, ok := z.PollLog()
+		if !ok {
+			break
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+// GetZeltunStats retrieves extended telemetry from the native Zeltun core.
+func (t *TunManager) GetZeltunStats() (ZeltunStats, bool) {
+	t.mu.Lock()
+	runningZeltun := t.running && t.activeEngine == EngineZeltun
+	t.mu.Unlock()
+	if !runningZeltun {
+		return ZeltunStats{}, false
+	}
+	z, err := getZeltunBridge()
+	if err != nil {
+		return ZeltunStats{}, false
+	}
+	st, err := z.GetStatsEx()
+	if err != nil {
+		return ZeltunStats{}, false
+	}
+	return st, true
+}
+
+// Stop deactivates TUN mode, clears routing table entries, and stops the active TUN engine.
 func (t *TunManager) Stop() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.stopLocked()
+}
 
+func (t *TunManager) stopLocked() error {
 	if !t.running {
+		return nil
+	}
+
+	if t.activeEngine == EngineZeltun {
+		if z, err := getZeltunBridge(); err == nil {
+			_ = z.Stop()
+		}
+		t.activeEngine = ""
+		t.activeUpstreamTarget = ""
+		t.running = false
 		return nil
 	}
 
@@ -401,12 +603,17 @@ func (t *TunManager) Stop() error {
 	// Clear socket tables and cached process entries
 	ClearPortCache()
 
+	t.activeEngine = ""
+	t.activeUpstreamTarget = ""
 	t.running = false
 	return nil
 }
 
 // CleanupStaleRoutes cleans up any orphaned TUN routes from previous abrupt shutdowns or crashes
 func (t *TunManager) CleanupStaleRoutes() error {
+	if z, err := getZeltunBridge(); err == nil {
+		z.CleanupStale(TunInterfaceName, TunGateway)
+	}
 	_ = silentCommand("route", "delete", "0.0.0.0", "mask", "128.0.0.0", TunGateway).Run()
 	_ = silentCommand("route", "delete", "128.0.0.0", "mask", "128.0.0.0", TunGateway).Run()
 	_ = silentCommand("route", "delete", "0.0.0.0", "mask", "0.0.0.0", TunGateway).Run()
