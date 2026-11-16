@@ -1,242 +1,134 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="Byp Logo" width="105" height="105" />
-  <h1>⚡ Byp</h1>
+  <img src="assets/logo.svg" alt="Byp Windows Xray Client" width="88" height="88" />
+  <h1>Byp</h1>
   <p>
-    <b>The Ultra-Lightweight V2Ray & Xray Windows Client with Kernel-Level Split Tunneling & Gaming Performance Mode.</b>
+    <strong>Lightweight Windows Xray &amp; V2Ray client with kernel-level per-app split tunneling powered by the Zeltun Rust engine.</strong>
   </p>
   <p>
-    <i>Route Discord, Telegram, or any specific app through your encrypted proxy while keeping your games and entire PC on raw, low-ping direct ISP internet — visually, with zero manual routing headaches.</i>
+    <strong><a href="https://github.com/devlsam/Byp/releases/latest">Download Latest Release (Windows x64)</a></strong>
+    &nbsp;·&nbsp;
+    <a href="#tun-engines">TUN Engines</a>
+    &nbsp;·&nbsp;
+    <a href="#connection-modes">Modes</a>
+    &nbsp;·&nbsp;
+    <a href="#architecture">Architecture</a>
+    &nbsp;·&nbsp;
+    <a href="#build-from-source">Build</a>
+    &nbsp;·&nbsp;
+    <a href="#support--donate">Donate</a>
   </p>
-
   <p>
-    <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows" />
-    <img src="https://img.shields.io/badge/Stack-Go%20%2B%20Wails%20v3-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Stack" />
-    <img src="https://img.shields.io/badge/Engine-In--Memory%20Xray%20%2B%20Wintun-10b981?style=for-the-badge" alt="Engine" />
-    <img src="https://img.shields.io/badge/RAM%20Usage-~40MB-8b5cf6?style=for-the-badge" alt="RAM" />
-    <img src="https://img.shields.io/badge/Features-Auto--Connect%20%7C%20Auto--Update-ec4899?style=for-the-badge" alt="Features" />
-    <img src="https://img.shields.io/badge/License-BUSL--1.1-f59e0b?style=for-the-badge" alt="License" />
-  </p>
-
-  <p>
-    <a href="#-quick-download--installation">⚡ Quick Install</a> •
-    <a href="#-overview-why-byp">📖 Overview</a> •
-    <a href="#-key-features">✨ Key Features</a> •
-    <a href="#-kernel-level-architecture">🛠️ Architecture</a> •
-    <a href="#-comparison">📊 Comparison</a> •
-    <a href="#-faq">❓ FAQ</a>
-  </p>
-
-  <p>
-    <b>🌐 English</b> | <a href="README_FA.md"><b>🇮🇷 نسخه فارسی (Persian)</b></a>
+    <sub>Windows 10 / 11 (x64) · Go + Wails v3 · In-Memory Xray-core · Zeltun (Rust TUN) · BUSL-1.1</sub>
   </p>
 </div>
 
----
+<p align="center">
+  <img src="assets/demo.gif" alt="Byp visual per-app split tunneling demo for Windows" width="560" />
+</p>
 
-## ⚡ Quick Download & Installation
+## Why Byp
 
-Get started with **Byp** in seconds — no complex installers, no background CLI bloat.
+I built Byp around `xray-core` because existing Xray/V2Ray Windows clients kept getting in the way: sluggish interfaces, bloated CPU/RAM overhead, and no straightforward way to route different apps over VPN vs. direct internet.
 
-### Option 1: Direct Download (Recommended)
+If you play online games from regions like Iran, most games either work fine directly or need raw ISP latency—while **Discord UDP voice**, Telegram, or a browser still needs an encrypted tunnel. Enabling a full-system TUN spikes game ping and breaks local traffic, and writing manual JSON routing rules for ephemeral UDP ports breaks as soon as an app updates.
 
-1. Download the latest release from the [**Releases**](https://github.com/devlsam/Byp/releases) page:
-   - 📦 [**Download Latest `byp.exe` / `.zip`**](https://github.com/devlsam/Byp/releases/latest)
-2. Extract and run **`byp.exe`** as **Administrator** *(required by Windows to create the Layer-3 `Wintun` virtual network adapter and manage process-level packet routes)*.
-3. Import your configuration (`vless://`, `vmess://`, `trojan://`, `ss://` or Subscription link) and enjoy smooth gaming!
-
-> [!TIP]
-> **Windows SmartScreen Note:** As Byp is an independent project without an expensive corporate certificate, Windows Defender SmartScreen might show a prompt on initial launch. Click **"More info"** ➔ **"Run anyway"** to launch.
+Byp solves that with visual, per-process split tunneling at the Windows kernel/socket boundary: wire `Discord.exe` to **VPN Tunnel** and leave games on **Direct Internet**, with no external proxy wrappers or manual route maintenance.
 
 ---
 
-### Option 2: Building from Source
+## TUN Engines
 
-Prerequisites: **Go 1.25+**, **Node.js 22+**, and **Wails v3 CLI**.
+Byp embeds two interchangeable Layer-3 TUN engines:
+
+- **Zeltun** *(default, recommended)* — A native TUN engine I wrote in **Rust** and open-sourced separately at **[devlsam/Zeltun](https://github.com/devlsam/Zeltun)**. Handles packet forwarding, socket PID matching, QUIC blocking, DNS/NRPT leak protection, LAN bypass, and Gaming UDP QoS with near-zero CPU overhead.
+- **tun2socks** — Classic built-in Go `gVisor` TCP/IP stack kept available as an alternative engine (also supports Jumbo MTU up to `9000`).
+
+| Capability | Zeltun (Rust, Default) | tun2socks (Go gVisor) |
+| :--- | :--- | :--- |
+| **Forwarding Engine** | Native Rust `zeltun.dll` | Go `gVisor` netstack |
+| **Per-App Split Tunneling** | Global / Include / Exclude (Live hot-reload) | Global / Include / Exclude |
+| **DNS & Leak Guard** | UDP:53 intercept, Windows NRPT Guard, Strict Anti-Leak, IPv6 Blackhole | Tunnel DNS routing |
+| **Packet Controls** | Block QUIC (`UDP:443`), TCP MSS Clamp, Gaming UDP QoS, SNI Sniff, LAN Bypass | Configurable MTU (`1280`–`9000`) |
+| **Live Telemetry** | Rx/Tx, Proxied vs. Direct split bytes, TCP/UDP session counts, drops | Basic throughput |
+
+---
+
+## Connection Modes
+
+- **TUN** — Routes traffic through **Zeltun** (or `tun2socks`) and Byp's embedded `xray-core`, with full per-app split tunneling.
+- **Upstream** — Runs **Zeltun** split tunneling in front of any external SOCKS5 proxy (`host:port`, with a pre-flight SOCKS5 probe). Use this when you want another VPN client or local SOCKS5 tunnel to inherit Byp's per-app split routing, without running Byp's Xray core.
+- **System Proxy** — Configures Windows WinINET system proxy cleanly (and clears it automatically on exit or shutdown).
+- **Core Only** — Runs the local in-memory Xray SOCKS5 listener on your configured port without touching adapters or Windows proxy settings.
+
+---
+
+## Key Capabilities
+
+- **Visual Split Tunneling:** Connect executables between **VPN Tunnel** and **Direct Internet** on a node canvas, with 1-click presets (`Discord`, `Telegram`, `Chrome`, `Steam`), a live running-process scanner, or any `.exe` path. Rules match base process names so auto-updating apps (such as Discord version folders) never break, and changes take effect live without reconnecting.
+- **Xray Protocol & Raw Config Support:** Supports `VLESS` (`XTLS-Reality`, `XTLS-Vision`), `VMess`, `Trojan`, `Shadowsocks`, transports (`TCP`, `WebSocket`, `gRPC`, plus `libxray` share-link parsing), Base64 subscriptions, TCP/URL ping testing, and full raw JSON editing.
+- **TUN Presets & Custom DNS:** One-click `Balanced`, `Gaming` (`8 MB` ring, `300s` UDP timeout, Gaming QoS), and `Zero-Leak` (`Strict Split Anti-Leak`, NRPT, IPv6 blackhole, QUIC block) profiles, plus quick DNS presets (`Cloudflare`, `Google`, `Shecan`, `Electro`, `Quad9`, or manual).
+- **Configurable Inbound & Lifecycle:** Editable local SOCKS5 inbound port, autostart with Windows, auto-connect on launch, tray minimization with automatic memory trimming, and built-in GitHub Releases auto-updater.
+
+---
+
+## Architecture
+
+```
+Windows Apps ──▶ Socket Attribution (iphlpapi.dll: GetExtendedTcpTable / GetExtendedUdpTable)
+                    │
+                    ├──▶ [Direct / Bypassed Apps] ──▶ Physical NIC (IP_UNICAST_IF) ──▶ Direct ISP
+                    │
+                    └──▶ [Tunneled Apps] ──▶ BYP-TUN Adapter ──▶ Zeltun (Rust) / tun2socks
+                                                                         │
+                                                     ┌───────────────────┴───────────────────┐
+                                                     ▼                                       ▼
+                                            Embedded Xray-core                    External Upstream SOCKS5
+                                                (TUN Mode)                            (Upstream Mode)
+```
+
+- **Zero Bundled Browser Bloat:** Built with **Go** and **Wails v3**, using the native Windows Edge WebView2 runtime rather than shipping Chromium/Electron. Automatically trims Go heap and WebView2 working-set memory when hidden to the system tray.
+- **In-Memory Single Binary:** `xray-core` runs directly inside the Go process with gRPC traffic stats—no external `xray.exe` console windows or orphaned background binaries.
+- **Loop-Free Kernel Bypass:** Outbound direct sockets bind straight to your physical adapter's interface index (`setsockopt` with `IP_UNICAST_IF`), paired with static host routes for proxy server IPs so bypassed traffic never loops back into `BYP-TUN`.
+- **Self-Healing Network Handling:** A runtime network watcher tracks physical adapter/gateway switches and updates live routes; shutdown and startup cleanup hooks remove leftover static routes, system proxy flags, and Windows NRPT rules automatically.
+
+---
+
+## Download & Run
+
+1. Download the latest archive from **[GitHub Releases](https://github.com/devlsam/Byp/releases/latest)**.
+2. Extract and run the executable as **Administrator** *(required by Windows to initialize the `BYP-TUN` Layer-3 adapter, manage interface routes, and apply NRPT DNS rules)*.
+3. Import share links (`vless://`, `vmess://`, `trojan://`, `ss://`), a Base64 subscription URL, or raw Xray JSON.
+
+*SmartScreen note: binary releases are unsigned, so click **More info -> Run anyway** if Windows prompts on first launch.*
+
+---
+
+## Build from Source
+
+Prerequisites: **Go 1.27+**, **Node.js**, and **Wails v3 CLI**.
 
 ```bash
-# Clone the repository
 git clone https://github.com/devlsam/Byp.git
 cd Byp
-
-# Install dependencies and build
-go mod tidy
-wails3 build -clean -s
+wails3 task build
 ```
 
-The compiled native executable will be ready at `build/bin/byp.exe`.
+`zeltun.dll` is embedded directly in `internal/tun/assets/` and extracted automatically at runtime. The compiled Windows executable is written to `bin/`.
+
+If you want to build the TUN engine separately from source, clone [devlsam/Zeltun](https://github.com/devlsam/Zeltun), run `cargo build --release`, and copy `target/release/zeltun.dll` into `internal/tun/assets/zeltun.dll`.
 
 ---
 
-## 📖 Overview: Why Byp?
+## Support & Donate
 
-<div align="center">
-  <img src="assets/demo.gif" alt="Byp Split Tunneling Demo" width="540" />
-  <br/>
-  <sub><i>⚡ Interactive Visual Flow: Wire apps directly to <b>VPN Tunnel</b> or <b>Direct Internet</b> on the fly with zero connection drop.</i></sub>
-</div>
+If Byp lowered your game ping or simplified your setup, you can support the project here:
 
-<br/>
+https://donatr.ee/devlsam/
 
-### ❌ The Core Problem with Existing V2Ray / Xray Clients
-For millions of gamers, developers, and everyday users, existing Windows V2Ray clients (v2rayN, NekoBox, etc.) force a frustrating compromise:
-
-1. **System Proxy Fails for Gaming & Voice:** Apps like **Discord (WebRTC & UDP Voice)** and multiplayer games completely ignore Windows system proxy settings.
-2. **Global TUN Destroys Game Ping:** Turning on full TUN mode forces **100% of your PC's network traffic** through the proxy. Your gaming ping spikes from 40ms to 200ms+, packet loss climbs, direct file downloads are throttled, and domestic websites/banking lock you out.
-3. **Manual Routing Rules are an Exhausting Nightmare:** Setting up process routing in traditional clients requires writing tedious regex rules, digging through nested JSON files, hunting down ephemeral UDP ports, or maintaining fragile `.exe` path whitelists that break every time an app auto-updates.
-
-### ✅ The Byp Solution: Kernel-Level Split Tunneling
-**Byp** was built from the ground up to solve this exact problem:
-
-- **Separates Traffic at the Kernel Boundary:** Before network packets can congest or re-route through user-space proxies, Byp inspects and attributes socket ownership at the Windows kernel level.
-- **Game at 100% Native Ping While Discord Stays on VPN:** Keep `Discord.exe` (including voice chat) crystal-clear on your encrypted proxy, while your games (`Valorant`, `CS2`, `Dota 2`, `Call of Duty`, `Steam`) bypass the VPN entirely and run at direct physical ISP wire speeds.
-- **Full Freedom of Veteran Clients:** No features stripped down. You get full support for every modern Xray protocol, subscription management, and complete freedom to inspect and edit raw JSON configs just like you're used to.
-
----
-
-## ✨ Key Features
-
-### 🎨 1. Modern, Sleek & Fluid UI
-Ditch the cluttered, confusing interfaces from a decade ago. Byp features an ultra-responsive, dark matte aesthetic designed for speed and clarity. Smooth micro-interactions, clean visual feedback, and a frictionless experience make configuring proxies effortless.
-
-### ⚡ 2. Kernel-Level Visual Split Tunneling
-- **Visual Node Topology:** Inspired by modern flow-builders like n8n, simply wire applications between **`VPN Tunnel`** and **`Direct Internet`**.
-- **1-Click Presets:** Instantly route popular apps with built-in pills for `Discord.exe`, `Telegram.exe`, `Chrome.exe`, `Steam.exe`, and more.
-- **Live Process Scanner (`+ Running Apps`):** Scan active Windows processes directly from RAM, or browse for any `.exe` file on your system.
-- **Update-Resilient Engine:** Routes based on the base executable name across child processes, so auto-updating apps (like Discord updating to `app-1.0.9xxx`) never lose their routing rules.
-- **Zero-Restart Switching:** Flip an app's route instantly without dropping your active core connection.
-
-### 🌐 3. Full Xray Protocol Fleet & Unrestricted JSON Editing
-Supports every protocol, transport, and encryption scheme provided by `Xray-core`:
-- **Protocols:** `VLESS` (`XTLS-Reality`, `XTLS-Vision`), `VMess`, `Trojan`, `Shadowsocks`, `WireGuard`.
-- **Transports:** `TCP`, `WebSocket (WS)`, `gRPC`, `HTTPUpgrade`, `SplitHTTP`.
-- **Subscriptions:** Automated Base64 subscription import and periodic updates.
-- **Raw JSON Freedom:** Just like famous power-user clients, you have 100% open access to view, customize, and edit the underlying Xray JSON configurations. Your configs, your rules.
-
-### 🛡️ 4. Custom DNS Routing & Anti-Poisoning Guard
-- **Flexible DNS Routing:** Route DNS queries through custom upstream resolvers (Cloudflare, Google, custom DoH/DoT) or direct local gateways.
-- **Eliminate Voice & WebRTC Errors:** Transparent DNS interception prevents ISP DNS poisoning, permanently eliminating Discord `RTC Connecting` and `No Route` voice glitches.
-
-### 🔄 5. Direct GitHub Auto-Updater
-Never worry about manually hunting for new releases. Byp includes an integrated background auto-updater hooked directly to the [devlsam/Byp](https://github.com/devlsam/Byp) repository. When a new update drops, download and restart right from the app with one click.
-
-### 🚀 6. Auto-Connect on Launch & Boot Autostart
-- **Seamless Startup:** Enable auto-connect so Byp immediately engages your active proxy and split-tunneling rules the moment the application opens or when Windows boots.
-- **Zero-Friction Gaming:** Boot your PC, start your favorite game, and have Discord already routed through the proxy in the background without clicking a single button.
-
-### 🎮 7. Gaming Performance Mode (~40MB RAM Footprint)
-- **Engineered to be the Lightest Client Possible:** Built with native **Go** and **Wails v3**, utilizing the built-in Windows Edge WebView2 engine instead of dragging along a 300MB+ Chromium/Electron environment.
-- **Single In-Memory Executable:** Both `xray-core` and `tun2socks` run natively in memory inside `byp.exe`. No annoying popup CLI windows, no orphan background processes, and negligible CPU impact during intense gaming sessions.
-
----
-
-## 🛠️ Kernel-Level Architecture
-
-Traditional user-space proxy wrappers fail with games and WebRTC because applications spin up hundreds of transient TCP and UDP sockets every minute. **Byp** delivers line-rate performance with zero per-packet CPU overhead:
-
-```mermaid
-flowchart LR
-    subgraph "Windows Process Layer"
-        SYS["🖥️ My System (Default OS)"]
-        DISC["🎧 Discord.exe (TCP + UDP Voice)"]
-        GAME["🎮 Game.exe (CS2 / Valorant / Dota)"]
-    end
-
-    subgraph "Byp In-Memory Engine"
-        TUN["🛡️ Wintun + tun2socks\n(Exact Source-Port PID Matcher)"]
-    end
-
-    subgraph "Network Gateways"
-        VPN["⚡ VPN Tunnel\n(Embedded Xray-core)"]
-        ISP["🌐 Direct Internet\n(Physical NIC via IP_UNICAST_IF)"]
-    end
-
-    SYS -.->|Default Route| ISP
-    DISC ==>|Tunnel Wire| TUN
-    GAME -.->|Direct Wire| ISP
-    TUN ==>|Encrypted Wire| VPN
-```
-
-1. **Exact Source-Port Attribution (`iphlpapi.dll`):** Packets entering the Layer-3 `Wintun` adapter have their original source ports inspected in the `gVisor` netstack *before* NAT translation. Byp queries Windows kernel socket tables (`GetExtendedTcpTable` & `GetExtendedUdpTable`) to pinpoint the owning PID in nanoseconds.
-2. **Lock-Free Memory Cache:** Process image paths are mapped once during initial handshake via `QueryFullProcessImageNameW` and cached in a thread-safe `sync.Map`. All subsequent data packets flow at native wire speed.
-3. **Hardware Layer-3 NIC Binding (`IP_UNICAST_IF`):** Packets designated for direct internet are locked to your physical network interface's `InterfaceIndex` at socket creation via `setsockopt(..., IP_UNICAST_IF)`, completely eliminating routing loops back into the TUN adapter.
-4. **Crash-Safe Self-Healing:** Shutdown hooks instantly purge static routes, release the `Wintun` interface, and reset Windows system proxies upon exit. Your internet will never get stuck.
-
----
-
-## 📊 Comparison
-
-| Feature | ⚡ Byp | v2rayN | NekoRay / NekoBox | Proxifier + Xray |
-| :--- | :---: | :---: | :---: | :---: |
-| **Per-App Split Tunneling** | **Interactive Visual Canvas** | Nested text menus | Complex routing rules | External paid tool |
-| **Discord Voice (UDP) Split** | **✅ 1-Click Preset** | ⚠️ Complex TUN config | ⚠️ Manual process rules | ⚠️ Manual port mapping |
-| **Game Ping Protection** | **✅ Kernel NIC Binding** | ⚠️ Route table conflicts | ⚠️ Packet latency overhead | ❌ Not a tunnel client |
-| **RAM Footprint (Idle)** | **~35 MB – 50 MB** | ~90 MB – 140 MB | ~110 MB – 160 MB | ~120 MB+ |
-| **Core Architecture** | **In-Memory Go Binary** | Spawns external CLI .exe | Spawns external core .exe | Requires 2 separate apps |
-| **App Update Tolerance** | **✅ Matches Base Executable** | ⚠️ Breaks on folder change | ⚠️ Breaks on folder change | ✅ Supported |
-| **Auto-Connect on Launch** | **✅ Native Setting** | ⚠️ Varies | ⚠️ Manual | ❌ N/A |
-| **Built-in Auto Updater** | **✅ Direct from GitHub** | ⚠️ Manual / Semi-auto | ⚠️ Manual download | ⚠️ Separate updater |
-| **Raw JSON Config Freedom** | **✅ Full Freedom** | ✅ Supported | ⚠️ Limited in UI | ❌ N/A |
-
----
-
-## 🗺️ Roadmap
-
-- [x] In-memory `xray-core` + `tun2socks` (Wintun) single-binary architecture
-- [x] Interactive node-based split tunneling for `.exe` applications
-- [x] 1-Click quick presets (Discord, Telegram, Steam, Chrome) & live process scanner
-- [x] Layer-3 physical NIC binding (`IP_UNICAST_IF`) for loop-free bypass
-- [x] Auto-Connect on Launch & Windows autostart
-- [x] Native GitHub Releases auto-updater
-- [ ] Domain & GeoIP routing blocks inside visual topology
-- [ ] Live per-application bandwidth and latency gauges on routing wires
-- [ ] Profile presets (Switch between "Gaming Mode", "Work Mode", and "Full VPN")
-
----
-
-## ❓ FAQ
-
-<details>
-<summary><b>Why is Byp the best V2Ray / Xray client for gaming on Windows?</b></summary>
-<br/>
-Because traditional clients route either your entire PC or rely on basic system proxies that ignore games and Discord UDP voice. Byp separates traffic at the kernel level using Wintun: Discord Voice stays encrypted and connected on your proxy, while games bypass the tunnel with 0ms added ping.
-</details>
-
-<details>
-<summary><b>How does Discord Voice work without "RTC Connecting" or "No Route" errors?</b></summary>
-<br/>
-Discord voice transmits over WebRTC via dynamic UDP ports. Byp's kernel attribution resolves Discord's UDP sockets instantly and tunnels them through Layer-3 TUN directly into the core, eliminating voice connection drops for good.
-</details>
-
-<details>
-<summary><b>Does Byp require Administrator privileges?</b></summary>
-<br/>
-Yes. Initializing the <code>Wintun</code> Layer-3 virtual network adapter and binding network sockets directly to physical NICs require standard Windows Administrator privileges.
-</details>
-
-<details>
-<summary><b>Do auto-updates for Discord or Telegram break my routing rules?</b></summary>
-<br/>
-No. Byp evaluates rules against the base process name (e.g. <code>Discord.exe</code>) across all child processes, regardless of whether Discord updates into a new directory like <code>app-1.0.9042</code>.
-</details>
-
-<details>
-<summary><b>Can I edit raw Xray JSON configs like in v2rayN?</b></summary>
-<br/>
-Yes! You have full access to inspect, modify, and tweak outbounds, inbounds, and routing JSON definitions directly.
-</details>
-
----
-
-## 🤝 Community & Support
-
-- **GitHub Repository:** [devlsam/Byp](https://github.com/devlsam/Byp)
+- **Zeltun Rust Engine:** [devlsam/Zeltun](https://github.com/devlsam/Zeltun)
 - **Bug Reports & Feature Requests:** [GitHub Issues](https://github.com/devlsam/Byp/issues)
 - **Discord:** `amosami`
 
-If **Byp** solved your gaming ping and split tunneling headaches, please consider giving this repo a **⭐ Star** to support ongoing development!
+## License
 
----
-
-## 📄 License
-
-Distributed under the [Business Source License 1.1 (BUSL-1.1)](LICENSE).
+Distributed under [BUSL-1.1](LICENSE).
