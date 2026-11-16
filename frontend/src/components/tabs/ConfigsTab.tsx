@@ -38,16 +38,16 @@ const ProfileRow: React.FC<ProfileRowProps> = React.memo(
     onEdit,
     onDelete,
   }) => {
-    const surfaceClass = compact
+    const surfaceClass = isSelected
       ? isActiveRunning
         ? 'modern-surface-active border-white/45 shadow-[0_0_20px_rgba(255,255,255,0.08)]'
-        : isSelected
-        ? 'modern-surface-active'
+        : 'modern-surface-active'
+      : compact
+      ? isActiveRunning
+        ? 'bg-white/[0.04] hover:bg-white/[0.07] border border-white/15'
         : 'bg-white/[0.03] hover:bg-white/[0.06] border border-white/5'
       : isActiveRunning
-      ? 'modern-surface-active border-white/45 shadow-[0_0_20px_rgba(255,255,255,0.08)]'
-      : isSelected
-      ? 'modern-surface-active'
+      ? 'modern-surface-interactive border-white/15'
       : 'modern-surface-interactive';
 
     return (
@@ -58,20 +58,29 @@ const ProfileRow: React.FC<ProfileRowProps> = React.memo(
         <div className="flex items-center space-x-2.5 min-w-0 flex-1 pr-2">
           <div
             className={`${compact ? 'w-1.5 h-1.5' : 'w-2 h-2'} rounded-full shrink-0 ${
-              isActiveRunning
-                ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.9)]'
-                : isSelected
-                ? 'bg-white'
+              isSelected
+                ? isActiveRunning
+                  ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.9)]'
+                  : 'bg-white'
+                : isActiveRunning
+                ? 'bg-transparent border-[1.5px] border-white shadow-[0_0_6px_rgba(255,255,255,0.75)]'
                 : 'bg-white/20'
             }`}
           />
           <div className="min-w-0 flex-1">
-            <div
-              className="text-xs font-semibold text-white truncate leading-snug"
-              title={profile.name}
-              dir="auto"
-            >
-              {profile.name}
+            <div className="flex items-center space-x-1.5 min-w-0">
+              <div
+                className="text-xs font-semibold text-white truncate leading-snug"
+                title={profile.name}
+                dir="auto"
+              >
+                {profile.name}
+              </div>
+              {isActiveRunning && (
+                <span className="text-[8px] font-mono uppercase px-1.5 py-0.2 rounded bg-white text-black font-bold tracking-wider shrink-0">
+                  ACTIVE
+                </span>
+              )}
             </div>
             <div className="flex items-center space-x-1.5 text-[10px] text-zinc-400 font-mono mt-0.5 min-w-0">
               <span className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded bg-white/10 text-zinc-300 font-semibold border border-white/10 shrink-0">
