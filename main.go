@@ -113,12 +113,11 @@ func main() {
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		e.Cancel()
 		mainWindow.Hide()
-		sysutil.TrimProcessMemory()
 	})
 
-	// Reclaim memory pages when window is hidden
+	// Reclaim memory pages once asynchronously when window is hidden to tray
 	mainWindow.OnWindowEvent(events.Common.WindowHide, func(e *application.WindowEvent) {
-		sysutil.TrimProcessMemory()
+		go sysutil.TrimProcessMemory()
 	})
 
 	// Setup System Tray
@@ -133,7 +132,6 @@ func main() {
 	})
 	trayMenu.Add("Performance Mode").OnClick(func(ctx *application.Context) {
 		mainWindow.Hide()
-		sysutil.TrimProcessMemory()
 	})
 	trayMenu.AddSeparator()
 	trayMenu.Add("Connect").OnClick(func(ctx *application.Context) {
@@ -158,7 +156,6 @@ func main() {
 	systemTray.OnClick(func() {
 		if mainWindow.IsVisible() {
 			mainWindow.Hide()
-			sysutil.TrimProcessMemory()
 		} else {
 			mainWindow.Show()
 			mainWindow.Focus()

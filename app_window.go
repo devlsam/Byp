@@ -1,9 +1,5 @@
 package main
 
-import (
-	"changeme/internal/sysutil"
-)
-
 // GetState returns the current application state.
 func (a *AppService) GetState() AppState {
 	a.mu.RLock()
@@ -20,17 +16,19 @@ func (a *AppService) GetState() AppState {
 
 // Quit terminates the desktop application cleanly.
 func (a *AppService) Quit() {
+	if a.store != nil {
+		_ = a.store.Flush()
+	}
 	if a.app != nil {
 		a.app.Quit()
 	}
 }
 
-// HideWindow hides the main window to the system tray and trims memory.
+// HideWindow hides the main window to the system tray (WindowHide triggers async memory trim).
 func (a *AppService) HideWindow() {
 	if a.app != nil {
 		if w, ok := a.app.Window.GetByName("main"); ok {
 			w.Hide()
-			sysutil.TrimProcessMemory()
 		}
 	}
 }
