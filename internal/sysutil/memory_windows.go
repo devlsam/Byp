@@ -12,16 +12,20 @@ var (
 	procSetProcessWorkingSetSize = modkernel32.NewProc("SetProcessWorkingSetSize")
 )
 
+// TrimGoMemory releases unmapped Go heap pages back to the OS and trims only the Go process
+// without disturbing WebView2 GPU/renderer caches while the UI window remains open.
+func TrimGoMemory() {
+	debug.FreeOSMemory()
+	trimHandle(windows.CurrentProcess())
+}
+
 // TrimProcessMemory instructs the Windows kernel to immediately flush unused physical
 // RAM pages out of physical memory for both the main process and all child WebView2 processes.
 func TrimProcessMemory() {
-	// 1. Force Go runtime to release unmapped memory pages back to the OS
-	debug.FreeOSMemory()
+	// 1. Release Go heap and trim current process working set
+	TrimGoMemory()
 
-	// 2. Trim working set of current main process
-	trimHandle(windows.CurrentProcess())
-
-	// 3. Find and trim all child processes (WebView2 browser, GPU, and renderer processes)
+	// 2. Find and trim all child processes (WebView2 browser, GPU, and renderer processes)
 	currentPID := windows.GetCurrentProcessId()
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
