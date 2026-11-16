@@ -159,6 +159,9 @@ export default function App() {
     selectedProfileId: '',
     autoConnect: false,
     autoStart: true,
+    autoCheckUpdates: true,
+    autoCheckUpdatesConfigured: true,
+    autoCheckUpdateHours: 4,
     dnsProvider: 'cloudflare',
     primaryDns: '1.1.1.1',
     secondaryDns: '1.0.0.1',
@@ -320,7 +323,7 @@ export default function App() {
         setDnsProvider((prev) => (prev === nextProvider ? prev : nextProvider));
         setPrimaryDns((prev) => (prev === nextPrimary ? prev : nextPrimary));
         setSecondaryDns((prev) => (prev === nextSecondary ? prev : nextSecondary));
-        if (state.settings.selectedProfileId) {
+        if (!selectedProfileIdRef.current && state.settings.selectedProfileId) {
           const nextSel = state.settings.selectedProfileId;
           selectedProfileIdRef.current = nextSel;
           setSelectedProfileId((prev) => (prev === nextSel ? prev : nextSel));
@@ -373,13 +376,17 @@ export default function App() {
 
       profilesRef.current = safeProfiles;
       setProfiles(safeProfiles);
-      if (
-        !selectedProfileIdRef.current &&
-        !state.settings?.selectedProfileId &&
-        safeProfiles.length > 0
-      ) {
-        selectedProfileIdRef.current = safeProfiles[0].id;
-        setSelectedProfileId(safeProfiles[0].id);
+      const selectedStillExists =
+        !!selectedProfileIdRef.current &&
+        safeProfiles.some((p) => p.id === selectedProfileIdRef.current);
+      if (!selectedStillExists) {
+        const fallbackId =
+          (state.settings?.selectedProfileId &&
+          safeProfiles.some((p) => p.id === state.settings?.selectedProfileId)
+            ? state.settings.selectedProfileId
+            : safeProfiles[0]?.id) || '';
+        selectedProfileIdRef.current = fallbackId;
+        setSelectedProfileId((prev) => (prev === fallbackId ? prev : fallbackId));
       }
 
       subscriptionsRef.current = safeSubs;
@@ -524,8 +531,8 @@ export default function App() {
       if (e.key === '1') handleSelectTab('connect');
       if (e.key === '2') handleSelectTab('configs');
       if (e.key === '3') handleSelectTab('split');
-      if (e.key === '4') handleSelectTab('tun_settings');
-      if (e.key === '5') handleSelectTab('socks');
+      if (e.key === '4') handleSelectTab('socks');
+      if (e.key === '5') handleSelectTab('tun_settings');
       if (e.key === '6') handleSelectTab('app_settings');
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -581,11 +588,17 @@ export default function App() {
   }, [refreshData]);
 
   const handleSelectQuickProfile = useCallback((id: string) => {
+    selectedProfileIdRef.current = id;
     setSelectedProfileId(id);
     setShowQuickPicker(false);
     if (connectedRef.current) {
       AppService.Connect(id, modeRef.current);
     }
+  }, []);
+
+  const handleSelectConfigProfile = useCallback((id: string) => {
+    selectedProfileIdRef.current = id;
+    setSelectedProfileId(id);
   }, []);
 
   const handleOpenSubModal = useCallback(() => {
@@ -703,6 +716,42 @@ export default function App() {
       toast.error('Failed to update auto-connect', err?.message || String(err));
     }
   }, []);
+
+  // Periodic Auto Update Check Toggle & Interval (1..24h)
+  const handleToggleAutoCheckUpdates = useCallback(async () => {
+    const current = settingsRef.current.autoCheckUpdates ?? true;
+    const nextVal = !current;
+    const hours = settingsRef.current.autoCheckUpdateHours || 4;
+    const ok = await handleUpdateSettings({
+      autoCheckUpdates: nextVal,
+      autoCheckUpdatesConfigured: true,
+    });
+    if (ok) {
+      toast.info(
+        nextVal ? 'Periodic Update Check Enabled' : 'Periodic Update Check Disabled',
+        nextVal
+          ? `Will check GitHub Releases every ${hours} hour${hours > 1 ? 's' : ''} while running.`
+          : 'Background interval checks disabled. Startup alerts & manual updates remain active.'
+      );
+    }
+  }, [handleUpdateSettings]);
+
+  const handleChangeAutoCheckHours = useCallback(
+    async (hours: number) => {
+      const clamped = Math.min(24, Math.max(1, Math.round(hours)));
+      const ok = await handleUpdateSettings({
+        autoCheckUpdateHours: clamped,
+        autoCheckUpdatesConfigured: true,
+      });
+      if (ok) {
+        toast.info(
+          'Update Check Interval Saved',
+          `Auto-check scheduled every ${clamped} hour${clamped > 1 ? 's' : ''}.`
+        );
+      }
+    },
+    [handleUpdateSettings]
+  );
 
   // DNS Preset Selection
   const handleSelectDnsPreset = useCallback(async (preset: DnsPreset) => {
@@ -1510,7 +1559,7 @@ export default function App() {
                 connected={connected}
                 activeProfileId={activeProfileId}
                 selectedProfileId={selectedProfileId}
-                setSelectedProfileId={setSelectedProfileId}
+                setSelectedProfileId={handleSelectConfigProfile}
                 onPing={handlePing}
                 onPingAll={handlePingAll}
                 onDeleteProfile={handleDeleteProfile}
@@ -1583,6 +1632,9 @@ export default function App() {
                 setSecondaryDns={setSecondaryDns}
                 onToggleAutoStart={handleToggleAutoStart}
                 onToggleAutoConnect={handleToggleAutoConnect}
+                onToggleAutoCheckUpdates={handleToggleAutoCheckUpdates}
+                onChangeAutoCheckHours={handleChangeAutoCheckHours}
+                availableUpdate={availableUpdate}
                 onSelectDnsPreset={handleSelectDnsPreset}
                 onSaveCustomDns={handleSaveCustomDns}
               />

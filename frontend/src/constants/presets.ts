@@ -57,7 +57,7 @@ export const NAV_TABS = [
   { id: 'connect', icon: Zap, label: 'Connect & Stats', shortcut: '1' },
   { id: 'configs', icon: BoxesPacking, label: 'Configs & Nodes', shortcut: '2' },
   { id: 'split', icon: ObjectUngroup, label: 'Split Tunnel', shortcut: '3' },
-  { id: 'tun_settings', icon: Cpu, label: 'TUN Settings', shortcut: '4' },
-  { id: 'socks', icon: Sliders, label: 'Inbound & Network', shortcut: '5' },
+  { id: 'socks', icon: Sliders, label: 'Inbound & Network', shortcut: '4' },
+  { id: 'tun_settings', icon: Cpu, label: 'TUN Settings', shortcut: '5' },
   { id: 'app_settings', icon: SettingsIcon, label: 'App Settings', shortcut: '6' },
 ] as const;
