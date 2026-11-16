@@ -3,8 +3,81 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/updater"
+
+	"changeme/internal/storage"
 )
+
+
+const updateCheckUnit = time.Hour 
+
+  
+
+  
+
+func isUpdaterBusyOrReady(s updater.State) bool {
+	switch s {
+	case updater.StateChecking, updater.StateDownloading, updater.StateVerifying, updater.StateInstalling, updater.StateReady:
+		return true
+	default:
+		return false
+	}
+}
+
+// syncPeriodicUpdateChecker starts, updates the interval of, or stops the background update check loop.
+func (a *AppService) syncPeriodicUpdateChecker(enabled bool, hours int) {
+	a.updaterMu.Lock()
+	defer a.updaterMu.Unlock()
+
+	if !enabled {
+		if a.updaterCancel != nil {
+			a.updaterCancel()
+			a.updaterCancel = nil
+		}
+		a.updaterHours = 0
+		return
+	}
+
+	normalizedHours := storage.NormalizeUpdateCheckHours(hours)
+	if a.updaterCancel != nil && a.updaterHours == normalizedHours {
+		return
+	}
+
+	if a.updaterCancel != nil {
+		a.updaterCancel()
+		a.updaterCancel = nil
+	}
+
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	a.updaterCancel = cancel
+	a.updaterHours = normalizedHours
+	go a.periodicUpdateLoop(ctx, time.Duration(normalizedHours)*updateCheckUnit)
+}
+
+func (a *AppService) periodicUpdateLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.app == nil || a.app.Updater == nil || isUpdaterBusyOrReady(a.app.Updater.State()) {
+				continue
+			}
+			err := a.app.Updater.CheckAndInstall(ctx)
+			log.Printf("[Updater] periodic CheckAndInstall complete (err=%v)", err)
+		}
+	}
+}
 
 // CheckForUpdates queries GitHub Releases for newer releases.
 func (a *AppService) CheckForUpdates() (*UpdateInfo, error) {
