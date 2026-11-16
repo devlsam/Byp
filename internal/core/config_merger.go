@@ -170,7 +170,7 @@ func MergeCompleteConfig(outboundRaw string, opts ConfigMergerOptions) (string, 
 			"sniffing": map[string]any{
 				"enabled":      true,
 				"destOverride": []string{"http", "tls", "quic"},
-				"routeOnly":    false,
+				"routeOnly":    true,
 			},
 		},
 		{
@@ -192,7 +192,7 @@ func MergeCompleteConfig(outboundRaw string, opts ConfigMergerOptions) (string, 
 	}
 
 	routing := map[string]any{
-		"domainStrategy": "IPIfNonMatch",
+		"domainStrategy": "AsIs",
 		"rules": []map[string]any{
 			{
 				"type":        "field",
@@ -215,11 +215,11 @@ func MergeCompleteConfig(outboundRaw string, opts ConfigMergerOptions) (string, 
 	policy := map[string]any{
 		"levels": map[string]any{
 			"0": map[string]any{
-				"handshake":         4,
+				"handshake":         8,
 				"connIdle":          300,
 				"uplinkOnly":        2,
 				"downlinkOnly":      5,
-				"bufferSize":        4,
+				"bufferSize":        256,
 				"statsUserUplink":   true,
 				"statsUserDownlink": true,
 			},
