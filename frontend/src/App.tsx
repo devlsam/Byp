@@ -1,5 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { AnimatePresence } from 'framer-motion';
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  startTransition,
+} from 'react';
 import { Events, Clipboard, Updater } from '@wailsio/runtime';
 import { AppService } from '../bindings/changeme';
 import type { Profile, Settings, Subscription } from '../bindings/changeme/internal/storage/models';
@@ -15,6 +21,7 @@ import { TitleBar } from './components/layout/TitleBar';
 import { ConnectTab } from './components/tabs/ConnectTab';
 import { ConfigsTab } from './components/tabs/ConfigsTab';
 import { SplitTab } from './components/tabs/SplitTab';
+import { TunSettingsTab } from './components/tabs/TunSettingsTab';
 import { SocksTab } from './components/tabs/SocksTab';
 import { SettingsTab } from './components/tabs/SettingsTab';
 
@@ -27,16 +34,116 @@ import { UpdatePromptModal } from './components/modals/UpdatePromptModal';
 import { parseProfileToForm, buildOutboundFromForm } from './utils/profileParser';
 import type { AppTab, ConfigFormState, DnsPreset } from './types';
 
+interface KeepAlivePaneProps {
+  isActive: boolean;
+  children: React.ReactNode;
+}
+
+/**
+ * Keeps visited tab DOM & Blink LayoutTree mounted off-layer with strict
+ * containment, inert isolation when inactive (blocking background Tab focus),
+ * and GPU-only opacity/transform enter & exit animations.
+ */
+const KeepAlivePane = React.memo<KeepAlivePaneProps>(
+  ({ isActive, children }) => {
+    const paneRef = React.useRef<HTMLDivElement>(null);
+
+    React.useLayoutEffect(() => {
+      const el = paneRef.current;
+      if (el) {
+        el.inert = !isActive;
+      }
+    }, [isActive]);
+
+    return (
+      <div
+        ref={paneRef}
+        className={isActive ? 'tab-pane tab-pane-active' : 'tab-pane tab-pane-inactive'}
+        aria-hidden={!isActive}
+      >
+        {children}
+      </div>
+    );
+  },
+  (prev, next) => !prev.isActive && !next.isActive
+);
+KeepAlivePane.displayName = 'KeepAlivePane';
+
+const PREWARM_TABS: AppTab[] = ['configs', 'split', 'tun_settings', 'socks', 'app_settings'];
+
 /**
  * Main application coordinator component.
  * Manages core state, bindings, lifecycle events, and modal orchestration.
  */
 export default function App() {
-  // Navigation: 5 Focused Tabs
+  // Navigation: 6 Focused Tabs (Connect renders first; remaining tabs pre-warm cleanly during idle slices)
   const [selectedTab, setSelectedTab] = useState<AppTab>('connect');
+  const [visitedTabs, setVisitedTabs] = useState<Record<AppTab, boolean>>({
+    connect: true,
+    configs: false,
+    split: false,
+    tun_settings: false,
+    socks: false,
+    app_settings: false,
+  });
+
+  const handleSelectTab = useCallback((tab: AppTab) => {
+    setSelectedTab(tab);
+    setVisitedTabs((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
+  }, []);
+
+  // Staggered idle pre-warming mounts inactive tabs after first paint so even the very first tab switch is instant
+  useEffect(() => {
+    let cancelled = false;
+    let idx = 0;
+    let timerId: number | null = null;
+    let idleId: number | null = null;
+    const ric = (window as any).requestIdleCallback as
+      | ((cb: () => void, opts?: { timeout: number }) => number)
+      | undefined;
+    const cic = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
+
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled || idx >= PREWARM_TABS.length) return;
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        if (cancelled || idx >= PREWARM_TABS.length) return;
+
+        const mountOne = () => {
+          if (cancelled || idx >= PREWARM_TABS.length) return;
+          const nextTab = PREWARM_TABS[idx++];
+          startTransition(() => {
+            setVisitedTabs((prev) => (prev[nextTab] ? prev : { ...prev, [nextTab]: true }));
+          });
+          scheduleNext(110);
+        };
+
+        if (ric) {
+          idleId = ric(
+            () => {
+              idleId = null;
+              mountOne();
+            },
+            { timeout: 250 }
+          );
+        } else {
+          mountOne();
+        }
+      }, delayMs);
+    };
+
+    scheduleNext(140);
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) clearTimeout(timerId);
+      if (idleId !== null && cic) cic(idleId);
+    };
+  }, []);
 
   // Application State
   const [connected, setConnected] = useState<boolean>(false);
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
   const [activeProfileId, setActiveProfileId] = useState<string>('');
   const [selectedProfileId, setSelectedProfileId] = useState<string>('');
   const [mode, setMode] = useState<string>('tun');
@@ -47,6 +154,8 @@ export default function App() {
     mode: 'tun',
     socksPort: 10808,
     httpPort: 10809,
+    upstreamHost: '127.0.0.1',
+    upstreamPort: 10808,
     selectedProfileId: '',
     autoConnect: false,
     autoStart: true,
@@ -55,6 +164,22 @@ export default function App() {
     secondaryDns: '1.0.0.1',
     splitTunnelMode: 'all',
     splitTunnelApps: [],
+    tunConfigured: true,
+    tunConfigVersion: 2,
+    tunEngine: 'zeltun',
+    tunMtu: 1500,
+    zeltunBlockQuic: true,
+    zeltunMssClamp: false,
+    zeltunTcpMss: 1360,
+    zeltunSniSniff: false,
+    zeltunBypassLan: true,
+    zeltunGamingQos: true,
+    zeltunCleanDns: true,
+    zeltunStrictLeak: false,
+    zeltunEnableNrpt: true,
+    zeltunBlockIpv6: true,
+    zeltunUdpTimeoutSec: 120,
+    zeltunRingMb: 4,
   });
 
   const [dnsProvider, setDnsProvider] = useState<string>('cloudflare');
@@ -136,21 +261,69 @@ export default function App() {
     }
   });
 
-  // Fetch initial state
-  const refreshData = async () => {
+  // Live refs keep memoized callbacks stable without recreating closures on unrelated root renders
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
+  const activeProfileIdRef = useRef(activeProfileId);
+  activeProfileIdRef.current = activeProfileId;
+  const selectedProfileIdRef = useRef(selectedProfileId);
+  selectedProfileIdRef.current = selectedProfileId;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
+  const subscriptionsRef = useRef(subscriptions);
+  subscriptionsRef.current = subscriptions;
+  const systemGatewayRef = useRef(systemGateway);
+  systemGatewayRef.current = systemGateway;
+  const appRoutesRef = useRef(appRoutes);
+  appRoutesRef.current = appRoutes;
+  const primaryDnsRef = useRef(primaryDns);
+  primaryDnsRef.current = primaryDns;
+  const secondaryDnsRef = useRef(secondaryDns);
+  secondaryDnsRef.current = secondaryDns;
+  const updatingSubsRef = useRef(updatingSubs);
+  updatingSubsRef.current = updatingSubs;
+  const updatingSubIdRef = useRef(updatingSubId);
+  updatingSubIdRef.current = updatingSubId;
+  const lastRoutesJsonRef = useRef<string>(JSON.stringify(appRoutes));
+
+  // Fetch initial state in parallel so React commits once instead of across 3 IPC waterfalls
+  const refreshData = useCallback(async (): Promise<Subscription[]> => {
     try {
-      const state = await AppService.GetState();
-      setConnected(state.connected);
-      setActiveProfileId(state.activeProfileId);
-      setMode(state.activeMode || state.settings?.mode || 'tun');
-      setCoreVersion(state.coreVersion);
+      const [state, pList, sList] = await Promise.all([
+        AppService.GetState(),
+        AppService.GetProfiles(),
+        AppService.GetSubscriptions(),
+      ]);
+
+      const safeProfiles = pList || [];
+      const safeSubs = sList || [];
+      const nextMode = state.activeMode || state.settings?.mode || 'tun';
+
+      setConnected((prev) => (prev === state.connected ? prev : state.connected));
+      setConnectedAt((prev) => (state.connected ? prev ?? Date.now() : null));
+      setActiveProfileId((prev) =>
+        prev === state.activeProfileId ? prev : state.activeProfileId
+      );
+      setMode((prev) => (prev === nextMode ? prev : nextMode));
+      setCoreVersion((prev) => (prev === state.coreVersion ? prev : state.coreVersion));
+
       if (state.settings) {
+        settingsRef.current = state.settings;
         setSettings(state.settings);
-        setDnsProvider(state.settings.dnsProvider || 'cloudflare');
-        setPrimaryDns(state.settings.primaryDns || '1.1.1.1');
-        setSecondaryDns(state.settings.secondaryDns || '1.0.0.1');
+        const nextProvider = state.settings.dnsProvider || 'cloudflare';
+        const nextPrimary = state.settings.primaryDns || '1.1.1.1';
+        const nextSecondary = state.settings.secondaryDns || '1.0.0.1';
+        setDnsProvider((prev) => (prev === nextProvider ? prev : nextProvider));
+        setPrimaryDns((prev) => (prev === nextPrimary ? prev : nextPrimary));
+        setSecondaryDns((prev) => (prev === nextSecondary ? prev : nextSecondary));
         if (state.settings.selectedProfileId) {
-          setSelectedProfileId(state.settings.selectedProfileId);
+          const nextSel = state.settings.selectedProfileId;
+          selectedProfileIdRef.current = nextSel;
+          setSelectedProfileId((prev) => (prev === nextSel ? prev : nextSel));
         }
 
         // Restore or synchronize visual split tunneling state
@@ -184,45 +357,68 @@ export default function App() {
           }
         });
 
-        setSystemGateway(effectiveSys);
-        setAppRoutes(currentRoutes);
+        const nextRoutesJson = JSON.stringify(currentRoutes);
+        if (systemGatewayRef.current !== effectiveSys) {
+          systemGatewayRef.current = effectiveSys;
+          setSystemGateway(effectiveSys);
+        }
+        if (lastRoutesJsonRef.current !== nextRoutesJson) {
+          lastRoutesJsonRef.current = nextRoutesJson;
+          appRoutesRef.current = currentRoutes;
+          setAppRoutes(currentRoutes);
+          localStorage.setItem('split_app_routes', nextRoutesJson);
+        }
         localStorage.setItem('split_system_gateway', effectiveSys);
-        localStorage.setItem('split_app_routes', JSON.stringify(currentRoutes));
       }
 
-      const pList = await AppService.GetProfiles();
-      setProfiles(pList || []);
-      if (!selectedProfileId && pList && pList.length > 0) {
-        setSelectedProfileId(pList[0].id);
+      profilesRef.current = safeProfiles;
+      setProfiles(safeProfiles);
+      if (
+        !selectedProfileIdRef.current &&
+        !state.settings?.selectedProfileId &&
+        safeProfiles.length > 0
+      ) {
+        selectedProfileIdRef.current = safeProfiles[0].id;
+        setSelectedProfileId(safeProfiles[0].id);
       }
 
-      const sList = await AppService.GetSubscriptions();
-      setSubscriptions(sList || []);
+      subscriptionsRef.current = safeSubs;
+      setSubscriptions(safeSubs);
+      return safeSubs;
     } catch (err) {
       console.error('Failed to load state:', err);
+      return [];
     }
-  };
+  }, []);
 
   useEffect(() => {
-    refreshData().then(async () => {
-      // Auto-update subscriptions once on startup if any exist
-      if (!hasAutoUpdatedSubs.current) {
-        hasAutoUpdatedSubs.current = true;
-        try {
-          const subs = await AppService.GetSubscriptions();
-          if (subs && subs.length > 0) {
-            toast.info('Updating Subscriptions', `Auto-syncing ${subs.length} subscription(s)...`);
+    let subAutoUpdateTimer: number | null = null;
+
+    refreshData().then((initialSubs) => {
+      // Defer background subscription sync until startup & idle tab pre-warming settle
+      if (!hasAutoUpdatedSubs.current && initialSubs.length > 0) {
+        subAutoUpdateTimer = window.setTimeout(async () => {
+          if (hasAutoUpdatedSubs.current || updatingSubsRef.current) return;
+          hasAutoUpdatedSubs.current = true;
+          try {
+            toast.info(
+              'Updating Subscriptions',
+              `Auto-syncing ${initialSubs.length} subscription(s)...`
+            );
             const count = await AppService.UpdateAllSubscriptions();
             await refreshData();
-            toast.success('Subscriptions Updated', `Successfully updated ${count} subscription(s).`);
+            toast.success(
+              'Subscriptions Updated',
+              `Successfully updated ${count} subscription(s).`
+            );
+          } catch (err: any) {
+            console.error('Auto subscription update failed:', err);
           }
-        } catch (err: any) {
-          console.error('Auto subscription update failed:', err);
-        }
+        }, 4500);
       }
     });
 
-    // Non-intrusive background update check on app launch (delayed by 2.5s for smooth startup)
+    // Non-intrusive background update check on app launch (staggered after subscription sync)
     const updateCheckTimer = setTimeout(async () => {
       try {
         const info = await AppService.CheckForUpdates();
@@ -236,7 +432,7 @@ export default function App() {
       } catch (err) {
         console.debug('Background update check skipped/failed:', err);
       }
-    }, 2500);
+    }, 6500);
 
     // Event listeners
     const unbindPing = Events.On('profile:ping', (event: any) => {
@@ -251,6 +447,7 @@ export default function App() {
       if (event && event.data) {
         const status = event.data;
         setConnected(status.connected);
+        setConnectedAt((prev) => (status.connected ? prev ?? Date.now() : null));
         if (status.activeProfileId) {
           setActiveProfileId(status.activeProfileId);
           setSelectedProfileId(status.activeProfileId);
@@ -294,6 +491,7 @@ export default function App() {
     });
 
     return () => {
+      if (subAutoUpdateTimer !== null) clearTimeout(subAutoUpdateTimer);
       clearTimeout(updateCheckTimer);
       unbindPing();
       unbindVpnStatus();
@@ -301,43 +499,70 @@ export default function App() {
       unReady();
       unErr();
     };
+  }, [refreshData]);
+
+  const handleUpdateSettings = useCallback(async (patch: Partial<Settings>): Promise<boolean> => {
+    const prev = settingsRef.current;
+    const next: Settings = { ...prev, ...patch, tunConfigured: true, tunConfigVersion: 2 };
+    settingsRef.current = next;
+    setSettings(next);
+    try {
+      await AppService.SaveSettings(next);
+      return true;
+    } catch (err: any) {
+      settingsRef.current = prev;
+      setSettings(prev);
+      toast.error('Failed to Save Settings', err?.message || String(err));
+      return false;
+    }
   }, []);
 
-  // Keyboard navigation shortcuts [1] [2] [3] [4] [5]
+  // Keyboard navigation shortcuts [1] [2] [3] [4] [5] [6]
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
-      if (e.key === '1') setSelectedTab('connect');
-      if (e.key === '2') setSelectedTab('configs');
-      if (e.key === '3') setSelectedTab('split');
-      if (e.key === '4') setSelectedTab('socks');
-      if (e.key === '5') setSelectedTab('app_settings');
+      if (e.key === '1') handleSelectTab('connect');
+      if (e.key === '2') handleSelectTab('configs');
+      if (e.key === '3') handleSelectTab('split');
+      if (e.key === '4') handleSelectTab('tun_settings');
+      if (e.key === '5') handleSelectTab('socks');
+      if (e.key === '6') handleSelectTab('app_settings');
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
+  }, [handleSelectTab]);
 
   // Optimistic Zero-Lag Connect Toggle
-  const handleToggleConnect = () => {
-    const targetId = selectedProfileId || profiles[0]?.id;
-    if (!targetId && !connected) {
+  const handleToggleConnect = useCallback(() => {
+    const currentMode = modeRef.current;
+    const currentlyConnected = connectedRef.current;
+    const isUpstream = currentMode === 'upstream';
+    const targetId = isUpstream
+      ? ''
+      : selectedProfileIdRef.current || profilesRef.current[0]?.id || '';
+
+    if (!isUpstream && !targetId && !currentlyConnected) {
       toast.error('No Config Selected', 'Please select or add a configuration profile first.');
       return;
     }
 
-    const nextState = !connected;
+    const nextState = !currentlyConnected;
+    connectedRef.current = nextState;
     setConnected(nextState);
     if (nextState) {
+      setConnectedAt(Date.now());
       setActiveProfileId(targetId);
     } else {
+      setConnectedAt(null);
       setActiveProfileId('');
     }
 
     if (nextState) {
-      AppService.Connect(targetId, mode)
+      AppService.Connect(targetId, currentMode)
         .catch((err: any) => {
+          connectedRef.current = false;
           setConnected(false);
+          setConnectedAt(null);
           setActiveProfileId('');
           toast.error('Connection Failed', err?.message || String(err));
         })
@@ -353,40 +578,93 @@ export default function App() {
           refreshData();
         });
     }
-  };
+  }, [refreshData]);
+
+  const handleSelectQuickProfile = useCallback((id: string) => {
+    setSelectedProfileId(id);
+    setShowQuickPicker(false);
+    if (connectedRef.current) {
+      AppService.Connect(id, modeRef.current);
+    }
+  }, []);
+
+  const handleOpenSubModal = useCallback(() => {
+    setShowSubModal(true);
+  }, []);
 
   // Change routing mode
-  const handleModeChange = (newMode: string) => {
-    setMode(newMode);
-    const updated = { ...settings, mode: newMode };
-    setSettings(updated);
-    AppService.SaveSettings(updated);
+  const handleModeChange = useCallback(
+    (newMode: string) => {
+      setMode(newMode);
+      const updated: Settings = { ...settingsRef.current, mode: newMode };
+      settingsRef.current = updated;
+      setSettings(updated);
+      AppService.SaveSettings(updated).catch(() => {});
 
-    const modeLabels: Record<string, { title: string; desc: string }> = {
-      tun: { title: 'TUN Mode Activated', desc: 'Virtual network adapter routing system traffic' },
-      system_proxy: { title: 'System Proxy Enabled', desc: 'Windows HTTP/SOCKS system proxy configured' },
-      direct: { title: 'Direct Mode Active', desc: 'Proxy bypassed for direct internet connection' },
-      pac: { title: 'PAC Routing Active', desc: 'Automatic proxy configuration script applied' },
-    };
-    const info = modeLabels[newMode] || {
-      title: 'Mode Changed',
-      desc: `Operating mode set to ${newMode.toUpperCase()}`,
-    };
-    toast.info(info.title, info.desc);
+      const modeLabels: Record<string, { title: string; desc: string }> = {
+        tun: { title: 'TUN Mode Activated', desc: 'Built-in Xray + Wintun virtual adapter routing traffic' },
+        upstream: {
+          title: 'Upstream Proxy Mode',
+          desc: 'TUN & Split Tunnel connected directly to external SOCKS5 client',
+        },
+        proxy: { title: 'System Proxy Enabled', desc: 'Windows HTTP/SOCKS system proxy configured' },
+        core: { title: 'Core Mode Selected', desc: 'Built-in Xray running on local inbound ports only' },
+      };
+      const info = modeLabels[newMode] || {
+        title: 'Mode Changed',
+        desc: `Operating mode set to ${newMode.toUpperCase()}`,
+      };
+      toast.info(info.title, info.desc);
 
-    if (connected && activeProfileId) {
-      AppService.Connect(activeProfileId, newMode).catch(() => {});
-    }
-  };
+      if (connectedRef.current) {
+        if (newMode === 'upstream') {
+          AppService.Connect('', 'upstream')
+            .catch((err: any) => {
+              toast.error('Switch to Upstream Failed', err?.message || String(err));
+            })
+            .finally(() => {
+              refreshData();
+            });
+        } else {
+          const targetId =
+            activeProfileIdRef.current ||
+            selectedProfileIdRef.current ||
+            profilesRef.current[0]?.id ||
+            '';
+          if (!targetId) {
+            AppService.Disconnect()
+              .catch(() => {})
+              .finally(() => refreshData());
+            toast.info('Select a Config', 'Choose a config profile to connect in this mode.');
+            return;
+          }
+          AppService.Connect(targetId, newMode)
+            .catch((err: any) => {
+              toast.error('Mode Switch Failed', err?.message || String(err));
+            })
+            .finally(() => {
+              refreshData();
+            });
+        }
+      }
+    },
+    [refreshData]
+  );
+
+  const handleSwitchToTun = useCallback(() => {
+    handleModeChange('tun');
+  }, [handleModeChange]);
 
   // Windows Auto-Start Toggle
-  const handleToggleAutoStart = async () => {
-    const current = settings.autoStart ?? true;
+  const handleToggleAutoStart = useCallback(async () => {
+    const prev = settingsRef.current;
+    const current = prev.autoStart ?? true;
     const nextVal = !current;
     const updatedSettings: Settings = {
-      ...settings,
+      ...prev,
       autoStart: nextVal,
     };
+    settingsRef.current = updatedSettings;
     setSettings(updatedSettings);
     try {
       await AppService.SaveSettings(updatedSettings);
@@ -397,17 +675,21 @@ export default function App() {
           : 'Auto-launch on Windows startup has been disabled.'
       );
     } catch (err: any) {
+      settingsRef.current = prev;
+      setSettings(prev);
       toast.error('Failed to change startup setting', err?.message || String(err));
     }
-  };
+  }, []);
 
   // Auto-Connect on Launch Toggle
-  const handleToggleAutoConnect = async () => {
-    const nextVal = !settings.autoConnect;
+  const handleToggleAutoConnect = useCallback(async () => {
+    const prev = settingsRef.current;
+    const nextVal = !prev.autoConnect;
     const updatedSettings: Settings = {
-      ...settings,
+      ...prev,
       autoConnect: nextVal,
     };
+    settingsRef.current = updatedSettings;
     setSettings(updatedSettings);
     try {
       await AppService.SaveSettings(updatedSettings);
@@ -416,22 +698,28 @@ export default function App() {
         nextVal ? 'Will connect automatically upon app launch.' : 'Will require manual connection.'
       );
     } catch (err: any) {
+      settingsRef.current = prev;
+      setSettings(prev);
       toast.error('Failed to update auto-connect', err?.message || String(err));
     }
-  };
+  }, []);
 
   // DNS Preset Selection
-  const handleSelectDnsPreset = async (preset: DnsPreset) => {
+  const handleSelectDnsPreset = useCallback(async (preset: DnsPreset) => {
     setDnsProvider(preset.id);
     if (preset.id !== 'custom') {
+      primaryDnsRef.current = preset.primary;
+      secondaryDnsRef.current = preset.secondary;
       setPrimaryDns(preset.primary);
       setSecondaryDns(preset.secondary);
+      const prev = settingsRef.current;
       const updatedSettings: Settings = {
-        ...settings,
+        ...prev,
         dnsProvider: preset.id,
         primaryDns: preset.primary,
         secondaryDns: preset.secondary,
       };
+      settingsRef.current = updatedSettings;
       setSettings(updatedSettings);
       try {
         await AppService.SaveSettings(updatedSettings);
@@ -440,86 +728,99 @@ export default function App() {
           `Using ${preset.name} (${preset.primary}${preset.secondary ? ' / ' + preset.secondary : ''})`
         );
       } catch (err: any) {
+        settingsRef.current = prev;
+        setSettings(prev);
         toast.error('Failed to save DNS', err?.message || String(err));
       }
     }
-  };
+  }, []);
 
   // Custom DNS Save
-  const handleSaveCustomDns = async () => {
-    const p = primaryDns.trim();
-    const s = secondaryDns.trim();
+  const handleSaveCustomDns = useCallback(async () => {
+    const p = primaryDnsRef.current.trim();
+    const s = secondaryDnsRef.current.trim();
     if (!p) {
       toast.error('Invalid DNS', 'Primary DNS IP address is required.');
       return;
     }
+    const prev = settingsRef.current;
     const updatedSettings: Settings = {
-      ...settings,
+      ...prev,
       dnsProvider: 'custom',
       primaryDns: p,
       secondaryDns: s,
     };
+    settingsRef.current = updatedSettings;
     setSettings(updatedSettings);
     setDnsProvider('custom');
     try {
       await AppService.SaveSettings(updatedSettings);
       toast.success('Custom DNS Saved', `Primary: ${p}${s ? ' | Secondary: ' + s : ''}`);
     } catch (err: any) {
+      settingsRef.current = prev;
+      setSettings(prev);
       toast.error('Failed to save DNS', err?.message || String(err));
     }
-  };
+  }, []);
 
-  // Split Tunneling & Visual Flow Handlers
-  const applyVisualRouting = async (
-    newSystemGateway: 'vpn' | 'direct',
-    newAppRoutes: Record<string, 'vpn' | 'direct'>,
-    appsList: string[]
-  ) => {
-    setSystemGateway(newSystemGateway);
-    setAppRoutes(newAppRoutes);
-    localStorage.setItem('split_system_gateway', newSystemGateway);
-    localStorage.setItem('split_app_routes', JSON.stringify(newAppRoutes));
+  // Split Tunneling & Visual Flow Handlers (single atomic SaveSettings write; stable references for React.memo tabs)
+  const applyVisualRouting = useCallback(
+    async (
+      newSystemGateway: 'vpn' | 'direct',
+      newAppRoutes: Record<string, 'vpn' | 'direct'>,
+      appsList: string[]
+    ) => {
+      const serializedRoutes = JSON.stringify(newAppRoutes);
+      systemGatewayRef.current = newSystemGateway;
+      appRoutesRef.current = newAppRoutes;
+      lastRoutesJsonRef.current = serializedRoutes;
+      setSystemGateway(newSystemGateway);
+      setAppRoutes(newAppRoutes);
+      localStorage.setItem('split_system_gateway', newSystemGateway);
+      localStorage.setItem('split_app_routes', serializedRoutes);
 
-    let backendMode: 'all' | 'whitelist' | 'blacklist' = 'all';
-    let backendApps: string[] = [];
+      let backendMode: 'all' | 'whitelist' | 'blacklist' = 'all';
+      let backendApps: string[] = [];
 
-    if (newSystemGateway === 'direct') {
-      backendMode = 'whitelist';
-      backendApps = appsList.filter((a) => (newAppRoutes[a] || 'vpn') === 'vpn');
-    } else {
-      const directApps = appsList.filter((a) => (newAppRoutes[a] || 'vpn') === 'direct');
-      if (directApps.length > 0) {
-        backendMode = 'blacklist';
-        backendApps = directApps;
+      if (newSystemGateway === 'direct') {
+        backendMode = 'whitelist';
+        backendApps = appsList.filter((a) => (newAppRoutes[a] || 'vpn') === 'vpn');
       } else {
-        backendMode = 'all';
-        backendApps = [];
+        const directApps = appsList.filter((a) => (newAppRoutes[a] || 'vpn') === 'direct');
+        if (directApps.length > 0) {
+          backendMode = 'blacklist';
+          backendApps = directApps;
+        } else {
+          backendMode = 'all';
+          backendApps = [];
+        }
       }
-    }
 
-    const updatedSettings: Settings = {
-      ...settings,
-      splitTunnelMode: backendMode,
-      splitTunnelApps: appsList,
-      splitDriverApps: backendApps,
-      splitSystemGateway: newSystemGateway,
-      splitAppRoutes: JSON.stringify(newAppRoutes),
-    };
-    setSettings(updatedSettings);
+      const updatedSettings: Settings = {
+        ...settingsRef.current,
+        splitTunnelMode: backendMode,
+        splitTunnelApps: appsList,
+        splitDriverApps: backendApps,
+        splitSystemGateway: newSystemGateway,
+        splitAppRoutes: serializedRoutes,
+      };
+      settingsRef.current = updatedSettings;
+      setSettings(updatedSettings);
 
-    try {
-      await AppService.SaveSettings(updatedSettings);
-      await AppService.SaveSplitTunnelConfig(backendMode, backendApps);
-    } catch (err: any) {
-      console.error('Failed to save split tunnel config', err);
-    }
-  };
+      try {
+        await AppService.SaveSettings(updatedSettings);
+      } catch (err: any) {
+        console.error('Failed to save split tunnel config', err);
+      }
+    },
+    []
+  );
 
-  const handleSelectExe = async () => {
+  const handleSelectExe = useCallback(async () => {
     try {
       const selected = await AppService.SelectAppExecutable();
       if (!selected) return;
-      const currentApps = settings.splitTunnelApps || [];
+      const currentApps = settingsRef.current.splitTunnelApps || [];
       const baseName = selected.split(/[\\/]/).pop() || selected;
       const alreadyExists = currentApps.some(
         (a) =>
@@ -528,15 +829,16 @@ export default function App() {
       );
       if (alreadyExists) return;
       const updatedApps = [...currentApps, selected];
-      const defaultRoute: 'vpn' | 'direct' = systemGateway === 'vpn' ? 'direct' : 'vpn';
-      const updatedRoutes = { ...appRoutes, [selected]: defaultRoute };
-      await applyVisualRouting(systemGateway, updatedRoutes, updatedApps);
+      const sysGw = systemGatewayRef.current;
+      const defaultRoute: 'vpn' | 'direct' = sysGw === 'vpn' ? 'direct' : 'vpn';
+      const updatedRoutes = { ...appRoutesRef.current, [selected]: defaultRoute };
+      await applyVisualRouting(sysGw, updatedRoutes, updatedApps);
     } catch (err: any) {
       console.error('File Selection Error', err);
     }
-  };
+  }, [applyVisualRouting]);
 
-  const handleOpenRunningApps = async () => {
+  const handleOpenRunningApps = useCallback(async () => {
     setShowRunningAppsModal(true);
     setRunningAppsLoading(true);
     setAppSearchQuery('');
@@ -548,73 +850,82 @@ export default function App() {
     } finally {
       setRunningAppsLoading(false);
     }
-  };
+  }, []);
 
-  const handleAddRunningApp = async (app: { name: string; path: string }) => {
-    try {
-      const currentApps = settings.splitTunnelApps || [];
-      const baseName = app.name;
-      const alreadyExists = currentApps.some(
-        (a) =>
-          a.toLowerCase() === app.path.toLowerCase() ||
-          a.toLowerCase() === baseName.toLowerCase()
-      );
-      if (alreadyExists) return;
-      const updatedApps = [...currentApps, app.path];
-      const defaultRoute: 'vpn' | 'direct' = systemGateway === 'vpn' ? 'direct' : 'vpn';
-      const updatedRoutes = { ...appRoutes, [app.path]: defaultRoute };
-      await applyVisualRouting(systemGateway, updatedRoutes, updatedApps);
-    } catch (err: any) {
-      console.error('Failed to add running app', err);
-    }
-  };
-
-  const handleAddPreset = async (preset: { name: string; exe: string }) => {
-    try {
-      const currentApps = settings.splitTunnelApps || [];
-      const already = currentApps.some(
-        (a) =>
-          a.toLowerCase().includes(preset.exe.toLowerCase()) ||
-          a.toLowerCase().includes(preset.name.toLowerCase())
-      );
-      if (already) return;
-
-      let targetPath = preset.exe;
+  const handleAddRunningApp = useCallback(
+    async (app: { name: string; path: string }) => {
       try {
-        const running = await AppService.GetRunningApps();
-        const match = running?.find(
-          (r) =>
-            r.name.toLowerCase() === preset.exe.toLowerCase() ||
-            r.name.toLowerCase().includes(preset.name.toLowerCase())
+        const currentApps = settingsRef.current.splitTunnelApps || [];
+        const baseName = app.name;
+        const alreadyExists = currentApps.some(
+          (a) =>
+            a.toLowerCase() === app.path.toLowerCase() ||
+            a.toLowerCase() === baseName.toLowerCase()
         );
-        if (match && match.path) {
-          targetPath = match.path;
-        }
-      } catch (_) {}
+        if (alreadyExists) return;
+        const updatedApps = [...currentApps, app.path];
+        const sysGw = systemGatewayRef.current;
+        const defaultRoute: 'vpn' | 'direct' = sysGw === 'vpn' ? 'direct' : 'vpn';
+        const updatedRoutes = { ...appRoutesRef.current, [app.path]: defaultRoute };
+        await applyVisualRouting(sysGw, updatedRoutes, updatedApps);
+      } catch (err: any) {
+        console.error('Failed to add running app', err);
+      }
+    },
+    [applyVisualRouting]
+  );
 
-      const updatedApps = [...currentApps, targetPath];
-      const defaultRoute: 'vpn' | 'direct' = systemGateway === 'vpn' ? 'direct' : 'vpn';
-      const updatedRoutes = { ...appRoutes, [targetPath]: defaultRoute };
-      await applyVisualRouting(systemGateway, updatedRoutes, updatedApps);
-    } catch (err: any) {
-      console.error('Failed to add preset', err);
-    }
-  };
+  const handleAddPreset = useCallback(
+    async (preset: { name: string; exe: string }) => {
+      try {
+        const currentApps = settingsRef.current.splitTunnelApps || [];
+        const already = currentApps.some(
+          (a) =>
+            a.toLowerCase().includes(preset.exe.toLowerCase()) ||
+            a.toLowerCase().includes(preset.name.toLowerCase())
+        );
+        if (already) return;
 
-  const handleClearAllApps = async () => {
-    if (!settings.splitTunnelApps || settings.splitTunnelApps.length === 0) return;
+        let targetPath = preset.exe;
+        try {
+          const running = await AppService.GetRunningApps();
+          const match = running?.find(
+            (r) =>
+              r.name.toLowerCase() === preset.exe.toLowerCase() ||
+              r.name.toLowerCase().includes(preset.name.toLowerCase())
+          );
+          if (match && match.path) {
+            targetPath = match.path;
+          }
+        } catch (_) {}
+
+        const updatedApps = [...currentApps, targetPath];
+        const sysGw = systemGatewayRef.current;
+        const defaultRoute: 'vpn' | 'direct' = sysGw === 'vpn' ? 'direct' : 'vpn';
+        const updatedRoutes = { ...appRoutesRef.current, [targetPath]: defaultRoute };
+        await applyVisualRouting(sysGw, updatedRoutes, updatedApps);
+      } catch (err: any) {
+        console.error('Failed to add preset', err);
+      }
+    },
+    [applyVisualRouting]
+  );
+
+  const handleClearAllApps = useCallback(async () => {
+    const currentApps = settingsRef.current.splitTunnelApps || [];
+    if (currentApps.length === 0) return;
     const ok = await confirmDialog.ask({
       title: 'Clear Application Rules',
-      message: `Are you sure you want to remove all ${settings.splitTunnelApps.length} configured application rules?`,
+      message: `Are you sure you want to remove all ${currentApps.length} configured application rules?`,
       confirmText: 'Clear All',
       cancelText: 'Cancel',
       isDestructive: true,
       icon: 'trash',
     });
     if (ok) {
-      await applyVisualRouting(systemGateway, {}, []);
+      await applyVisualRouting(systemGatewayRef.current, {}, []);
     }
-  };
+  }, [applyVisualRouting]);
 
   const filteredRunningApps = useMemo(() => {
     if (!appSearchQuery.trim()) return runningApps;
@@ -625,7 +936,7 @@ export default function App() {
   }, [runningApps, appSearchQuery]);
 
   // Emergency Reset Network
-  const handleResetNetwork = async () => {
+  const handleResetNetwork = useCallback(async () => {
     const ok = await confirmDialog.ask({
       title: 'Reset Network',
       message:
@@ -638,6 +949,8 @@ export default function App() {
     if (!ok) return;
 
     try {
+      connectedRef.current = false;
+      activeProfileIdRef.current = '';
       setConnected(false);
       setActiveProfileId('');
       await AppService.ResetNetwork();
@@ -645,10 +958,10 @@ export default function App() {
     } catch (err: any) {
       console.error('Reset Failed', err);
     }
-  };
+  }, [refreshData]);
 
   // Import from clipboard or manual
-  const handleImportClipboardDirect = async () => {
+  const handleImportClipboardDirect = useCallback(async () => {
     try {
       let text = '';
       try {
@@ -717,7 +1030,7 @@ export default function App() {
       setShowImportModal(true);
       toast.error('Import Failed', err?.message || 'Failed to parse configurations');
     }
-  };
+  }, [refreshData]);
 
   const handleImportManual = async () => {
     if (!importText.trim()) return;
@@ -806,10 +1119,12 @@ export default function App() {
     }
   };
 
-  const handleUpdateAllSubscriptions = async () => {
-    if (updatingSubs || subscriptions.length === 0) return;
+  const handleUpdateAllSubscriptions = useCallback(async () => {
+    const subs = subscriptionsRef.current;
+    if (updatingSubsRef.current || subs.length === 0) return;
+    updatingSubsRef.current = true;
     setUpdatingSubs(true);
-    toast.info('Updating Subscriptions', `Syncing ${subscriptions.length} subscription(s)...`);
+    toast.info('Updating Subscriptions', `Syncing ${subs.length} subscription(s)...`);
     try {
       const count = await AppService.UpdateAllSubscriptions();
       await refreshData();
@@ -817,77 +1132,92 @@ export default function App() {
     } catch (err: any) {
       toast.error('Subscription Update Failed', err?.message || 'Could not update subscriptions');
     } finally {
+      updatingSubsRef.current = false;
       setUpdatingSubs(false);
     }
-  };
+  }, [refreshData]);
 
-  const handleUpdateSingleSubscription = async (sub: Subscription, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (updatingSubId) return;
-    setUpdatingSubId(sub.id);
-    toast.info('Updating Subscription', `Syncing "${sub.name}"...`);
-    try {
-      await AppService.UpdateSubscription(sub.id);
-      await refreshData();
-      toast.success('Subscription Updated', `"${sub.name}" updated successfully.`);
-    } catch (err: any) {
-      toast.error('Update Failed', err?.message || 'Failed to update subscription');
-    } finally {
-      setUpdatingSubId(null);
-    }
-  };
-
-  const handleDeleteSubscriptionWithConfirm = async (sub: Subscription, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    const ok = await confirmDialog.ask({
-      title: 'Delete Subscription',
-      message: `Are you sure you want to delete "${sub.name}" and all of its ${sub.profileCount || 0} nodes?`,
-      confirmText: 'Delete',
-      cancelText: 'Cancel',
-      isDestructive: true,
-      icon: 'trash',
-    });
-    if (ok) {
+  const handleUpdateSingleSubscription = useCallback(
+    async (sub: Subscription, e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      if (updatingSubIdRef.current) return;
+      updatingSubIdRef.current = sub.id;
+      setUpdatingSubId(sub.id);
+      toast.info('Updating Subscription', `Syncing "${sub.name}"...`);
       try {
-        await AppService.DeleteSubscription(sub.id);
+        await AppService.UpdateSubscription(sub.id);
         await refreshData();
-        toast.success('Subscription Deleted', `Removed "${sub.name}".`);
+        toast.success('Subscription Updated', `"${sub.name}" updated successfully.`);
       } catch (err: any) {
-        toast.error('Delete Failed', err?.message || 'Failed to delete subscription');
+        toast.error('Update Failed', err?.message || 'Failed to update subscription');
+      } finally {
+        updatingSubIdRef.current = null;
+        setUpdatingSubId(null);
       }
-    }
-  };
+    },
+    [refreshData]
+  );
 
-  const handlePing = async (id: string, e?: React.MouseEvent) => {
+  const handleDeleteSubscriptionWithConfirm = useCallback(
+    async (sub: Subscription, e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      const ok = await confirmDialog.ask({
+        title: 'Delete Subscription',
+        message: `Are you sure you want to delete "${sub.name}" and all of its ${sub.profileCount || 0} nodes?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        isDestructive: true,
+        icon: 'trash',
+      });
+      if (ok) {
+        try {
+          await AppService.DeleteSubscription(sub.id);
+          await refreshData();
+          toast.success('Subscription Deleted', `Removed "${sub.name}".`);
+        } catch (err: any) {
+          toast.error('Delete Failed', err?.message || 'Failed to delete subscription');
+        }
+      }
+    },
+    [refreshData]
+  );
+
+  const handlePing = useCallback(async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setPingingMap((prev) => ({ ...prev, [id]: true }));
     try {
       const ping = await AppService.PingProfile(id);
-      if (typeof ping === 'number' && ping >= 0) {
+      if (typeof ping === 'number') {
         setProfiles((prev) => prev.map((p) => (p.id === id ? { ...p, ping } : p)));
       }
     } catch (err) {
       console.error('PingProfile error:', err);
     } finally {
       setPingingMap((prev) => ({ ...prev, [id]: false }));
-      refreshData();
     }
-  };
+  }, []);
 
-  const handlePingAll = async () => {
-    if (pingingAll || profiles.length === 0) return;
+  const handlePingAll = useCallback(async () => {
+    if (profilesRef.current.length === 0) return;
     setPingingAll(true);
     try {
-      await AppService.PingAllProfiles();
-      await refreshData();
+      const results = await AppService.PingAllProfiles();
+      if (results) {
+        setProfiles((prev) =>
+          prev.map((p) => {
+            const pingVal = results[p.id];
+            return typeof pingVal === 'number' ? { ...p, ping: pingVal } : p;
+          })
+        );
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setPingingAll(false);
     }
-  };
+  }, []);
 
-  const handleOpenEditModal = (p: Profile, e?: React.MouseEvent) => {
+  const handleOpenEditModal = useCallback((p: Profile, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const parsed = parseProfileToForm(p);
     setEditForm(parsed);
@@ -895,9 +1225,9 @@ export default function App() {
     setEditTab('form');
     setEditError('');
     setShowEditModal(true);
-  };
+  }, []);
 
-  const handleOpenCreateCustom = () => {
+  const handleOpenCreateCustom = useCallback(() => {
     let randomUuid = 'b831381d-6324-4d53-ad4f-8cda48b30811';
     try {
       if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -932,7 +1262,7 @@ export default function App() {
     setEditTab('form');
     setEditError('');
     setShowEditModal(true);
-  };
+  }, []);
 
   const updateEditField = (field: keyof ConfigFormState, value: any) => {
     setEditForm((prev) => {
@@ -1044,9 +1374,9 @@ export default function App() {
     }
   };
 
-  const handleDeleteProfile = async (id: string, e?: React.MouseEvent) => {
+  const handleDeleteProfile = useCallback(async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const target = profiles.find((p) => p.id === id);
+    const target = profilesRef.current.find((p) => p.id === id);
     const ok = await confirmDialog.ask({
       title: 'Delete Configuration',
       message: `Are you sure you want to delete "${target?.name || 'this configuration'}"? This action cannot be undone.`,
@@ -1057,33 +1387,35 @@ export default function App() {
     });
     if (ok) {
       await AppService.DeleteProfile(id);
-      if (selectedProfileId === id) {
+      if (selectedProfileIdRef.current === id) {
         setSelectedProfileId('');
       }
       refreshData();
     }
-  };
+  }, []);
 
-  const handleClearAllProfiles = async () => {
-    if (profiles.length === 0) return;
+  const handleClearAllProfiles = useCallback(async () => {
+    const currentProfiles = profilesRef.current;
+    if (currentProfiles.length === 0) return;
     const ok = await confirmDialog.ask({
       title: 'Delete All Configs',
-      message: `Are you sure you want to remove all ${profiles.length} configurations? This action cannot be undone.`,
+      message: `Are you sure you want to remove all ${currentProfiles.length} configurations? This action cannot be undone.`,
       confirmText: 'Delete All',
       cancelText: 'Cancel',
       isDestructive: true,
       icon: 'trash',
     });
     if (ok) {
-      for (const p of profiles) {
+      for (const p of currentProfiles) {
         try {
           await AppService.DeleteProfile(p.id);
         } catch (_) {}
       }
+      selectedProfileIdRef.current = '';
       setSelectedProfileId('');
       await refreshData();
     }
-  };
+  }, [refreshData]);
 
   const handleDeleteSubscription = async (sub: Subscription) => {
     const ok = await confirmDialog.ask({
@@ -1124,7 +1456,7 @@ export default function App() {
       {/* Sidebar Dock Rail */}
       <Sidebar
         selectedTab={selectedTab}
-        setSelectedTab={setSelectedTab}
+        setSelectedTab={handleSelectTab}
         connected={connected}
         mode={mode}
         onResetNetwork={handleResetNetwork}
@@ -1136,35 +1468,33 @@ export default function App() {
         <TitleBar />
 
         <main className="flex-1 flex flex-col bg-[#111216] overflow-hidden min-w-0 relative">
-          <AnimatePresence mode="wait">
-            {selectedTab === 'connect' && (
+          {visitedTabs.connect && (
+            <KeepAlivePane isActive={selectedTab === 'connect'}>
               <ConnectTab
-                key="connect"
                 connected={connected}
+                connectedAt={connectedAt}
+                isActive={selectedTab === 'connect'}
                 mode={mode}
                 activeProfile={activeProfile}
                 profiles={profiles}
                 selectedProfileId={selectedProfileId}
+                upstreamHost={settings.upstreamHost}
+                upstreamPort={settings.upstreamPort}
                 showQuickPicker={showQuickPicker}
                 setShowQuickPicker={setShowQuickPicker}
                 onToggleConnect={handleToggleConnect}
                 onModeChange={handleModeChange}
-                onSelectTab={setSelectedTab}
+                onSelectTab={handleSelectTab}
                 onPing={handlePing}
                 pingingMap={pingingMap}
-                onSelectProfile={(id) => {
-                  setSelectedProfileId(id);
-                  setShowQuickPicker(false);
-                  if (connected) {
-                    AppService.Connect(id, mode);
-                  }
-                }}
+                onSelectProfile={handleSelectQuickProfile}
               />
-            )}
+            </KeepAlivePane>
+          )}
 
-            {selectedTab === 'configs' && (
+          {visitedTabs.configs && (
+            <KeepAlivePane isActive={selectedTab === 'configs'}>
               <ConfigsTab
-                key="configs"
                 configViewMode={configViewMode}
                 setConfigViewMode={setConfigViewMode}
                 profiles={profiles}
@@ -1188,43 +1518,61 @@ export default function App() {
                 onOpenEditModal={handleOpenEditModal}
                 onImportClipboardDirect={handleImportClipboardDirect}
                 onOpenCreateCustom={handleOpenCreateCustom}
-                onOpenSubModal={() => setShowSubModal(true)}
+                onOpenSubModal={handleOpenSubModal}
                 onUpdateSingleSubscription={handleUpdateSingleSubscription}
                 onDeleteSubscriptionWithConfirm={handleDeleteSubscriptionWithConfirm}
                 onUpdateAllSubscriptions={handleUpdateAllSubscriptions}
               />
-            )}
+            </KeepAlivePane>
+          )}
 
-            {selectedTab === 'split' && (
+          {visitedTabs.split && (
+            <KeepAlivePane isActive={selectedTab === 'split'}>
               <SplitTab
-                key="split"
                 settings={settings}
                 systemGateway={systemGateway}
                 appRoutes={appRoutes}
                 mode={mode}
-                onSwitchToTun={() => handleModeChange('tun')}
+                isActive={selectedTab === 'split'}
+                onSwitchToTun={handleSwitchToTun}
                 applyVisualRouting={applyVisualRouting}
                 onSelectExe={handleSelectExe}
                 onOpenRunningApps={handleOpenRunningApps}
                 onAddPreset={handleAddPreset}
                 onClearAllApps={handleClearAllApps}
               />
-            )}
+            </KeepAlivePane>
+          )}
 
-            {selectedTab === 'socks' && (
-              <SocksTab
-                key="socks"
-                mode={mode}
+          {visitedTabs.tun_settings && (
+            <KeepAlivePane isActive={selectedTab === 'tun_settings'}>
+              <TunSettingsTab
                 settings={settings}
-                setSettings={setSettings}
+                connected={connected}
+                mode={mode}
+                isActive={selectedTab === 'tun_settings'}
+                onSwitchToTun={handleSwitchToTun}
+                onUpdateSettings={handleUpdateSettings}
+              />
+            </KeepAlivePane>
+          )}
+
+          {visitedTabs.socks && (
+            <KeepAlivePane isActive={selectedTab === 'socks'}>
+              <SocksTab
+                mode={mode}
+                connected={connected}
+                settings={settings}
+                onUpdateSettings={handleUpdateSettings}
                 onModeChange={handleModeChange}
                 onResetNetwork={handleResetNetwork}
               />
-            )}
+            </KeepAlivePane>
+          )}
 
-            {selectedTab === 'app_settings' && (
+          {visitedTabs.app_settings && (
+            <KeepAlivePane isActive={selectedTab === 'app_settings'}>
               <SettingsTab
-                key="app_settings"
                 settings={settings}
                 coreVersion={coreVersion}
                 dnsProvider={dnsProvider}
@@ -1238,70 +1586,80 @@ export default function App() {
                 onSelectDnsPreset={handleSelectDnsPreset}
                 onSaveCustomDns={handleSaveCustomDns}
               />
-            )}
-          </AnimatePresence>
+            </KeepAlivePane>
+          )}
         </main>
       </div>
 
       {/* Dialogs and Overlays */}
-      <SubscriptionModal
-        show={showSubModal}
-        onClose={() => setShowSubModal(false)}
-        subscriptions={subscriptions}
-        subName={subName}
-        setSubName={setSubName}
-        subUrl={subUrl}
-        setSubUrl={setSubUrl}
-        subLoading={subLoading}
-        subError={subError}
-        onAddSubscription={handleAddSubscription}
-        onDeleteSubscription={handleDeleteSubscription}
-      />
+      {showSubModal && (
+        <SubscriptionModal
+          show={showSubModal}
+          onClose={() => setShowSubModal(false)}
+          subscriptions={subscriptions}
+          subName={subName}
+          setSubName={setSubName}
+          subUrl={subUrl}
+          setSubUrl={setSubUrl}
+          subLoading={subLoading}
+          subError={subError}
+          onAddSubscription={handleAddSubscription}
+          onDeleteSubscription={handleDeleteSubscription}
+        />
+      )}
 
-      <ImportModal
-        show={showImportModal}
-        onClose={() => setShowImportModal(false)}
-        importText={importText}
-        setImportText={setImportText}
-        importError={importError}
-        importLoading={importLoading}
-        onImportManual={handleImportManual}
-        onOpenCreateCustom={handleOpenCreateCustom}
-      />
+      {showImportModal && (
+        <ImportModal
+          show={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          importText={importText}
+          setImportText={setImportText}
+          importError={importError}
+          importLoading={importLoading}
+          onImportManual={handleImportManual}
+          onOpenCreateCustom={handleOpenCreateCustom}
+        />
+      )}
 
-      <ConfigEditModal
-        show={showEditModal}
-        onClose={() => setShowEditModal(false)}
-        isNewConfig={isNewConfig}
-        editTab={editTab}
-        setEditTab={setEditTab}
-        editForm={editForm}
-        setEditForm={setEditForm}
-        updateEditField={updateEditField}
-        editSaving={editSaving}
-        editError={editError}
-        formatEditJson={formatEditJson}
-        onSaveProfile={handleSaveProfile}
-      />
+      {showEditModal && (
+        <ConfigEditModal
+          show={showEditModal}
+          onClose={() => setShowEditModal(false)}
+          isNewConfig={isNewConfig}
+          editTab={editTab}
+          setEditTab={setEditTab}
+          editForm={editForm}
+          setEditForm={setEditForm}
+          updateEditField={updateEditField}
+          editSaving={editSaving}
+          editError={editError}
+          formatEditJson={formatEditJson}
+          onSaveProfile={handleSaveProfile}
+        />
+      )}
 
-      <RunningAppsModal
-        show={showRunningAppsModal}
-        onClose={() => setShowRunningAppsModal(false)}
-        runningApps={runningApps}
-        runningAppsLoading={runningAppsLoading}
-        filteredRunningApps={filteredRunningApps}
-        appSearchQuery={appSearchQuery}
-        setAppSearchQuery={setAppSearchQuery}
-        settings={settings}
-        onAddRunningApp={handleAddRunningApp}
-      />
+      {showRunningAppsModal && (
+        <RunningAppsModal
+          show={showRunningAppsModal}
+          onClose={() => setShowRunningAppsModal(false)}
+          runningApps={runningApps}
+          runningAppsLoading={runningAppsLoading}
+          filteredRunningApps={filteredRunningApps}
+          appSearchQuery={appSearchQuery}
+          setAppSearchQuery={setAppSearchQuery}
+          settings={settings}
+          onAddRunningApp={handleAddRunningApp}
+        />
+      )}
 
-      <UpdatePromptModal
-        show={showUpdateModal}
-        updateInfo={availableUpdate}
-        onClose={handleCloseUpdateModal}
-        onUpdateNow={handleUpdateNow}
-      />
+      {showUpdateModal && availableUpdate && (
+        <UpdatePromptModal
+          show={showUpdateModal}
+          updateInfo={availableUpdate}
+          onClose={handleCloseUpdateModal}
+          onUpdateNow={handleUpdateNow}
+        />
+      )}
 
       <Toaster />
       <LoadingOverlay />
