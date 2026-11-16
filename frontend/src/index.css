@@ -37,7 +37,6 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
 }
 
 /* Globally hide all ugly scrollbars while preserving full smooth scrolling */
@@ -66,31 +65,28 @@ body {
   height: 0px !important;
 }
 
-/* Smooth Transition Curve */
-.btn-power-transition {
-  transition: all 450ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Ultra-Modern Glassmorphism Surface & Hairline Borders */
+/* Monochrome Frosted Surface & Hairline Borders (static containers do not repaint on hover) */
 .modern-surface {
-  background: rgba(24, 26, 33, 0.75);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(22, 24, 30, 0.94);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45), inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+  box-shadow: 0 6px 20px 0 rgba(0, 0, 0, 0.36), inset 0 1px 0 0 rgba(255, 255, 255, 0.09);
 }
 
-.modern-surface:hover {
+.modern-surface-interactive {
+  background: rgba(22, 24, 30, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 20px 0 rgba(0, 0, 0, 0.36), inset 0 1px 0 0 rgba(255, 255, 255, 0.09);
+}
+
+.modern-surface-interactive:hover {
+  background: rgba(26, 29, 36, 0.96);
   border-color: rgba(255, 255, 255, 0.16);
-  box-shadow: 0 10px 36px 0 rgba(0, 0, 0, 0.55), inset 0 1px 0 0 rgba(255, 255, 255, 0.15);
 }
 
 .modern-surface-active {
-  background: rgba(36, 40, 52, 0.9);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(34, 38, 49, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.28);
-  box-shadow: 0 10px 40px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 0 rgba(255, 255, 255, 0.25), 0 0 25px rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.22), 0 0 18px rgba(255, 255, 255, 0.07);
 }
 
 /* Frosted Glass Power Button Styles */
@@ -107,9 +103,7 @@ body {
 }
 
 .glass-btn-active {
-  background: radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.12) 100%), rgba(25, 28, 36, 0.85);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
+  background: radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.12) 100%), rgba(25, 28, 36, 0.94);
   border: 1.5px solid rgba(255, 255, 255, 0.7);
   box-shadow: 
     0 0 35px rgba(255, 255, 255, 0.45),
@@ -137,27 +131,9 @@ button * {
   -webkit-app-region: no-drag;
 }
 
-/* Animated Flowing SVG Wire */
-@keyframes wireDash {
-  to {
-    stroke-dashoffset: -24;
-  }
-}
-
-.wire-animated {
-  stroke-dasharray: 4 6;
-  animation: wireDash 1s linear infinite;
-  will-change: stroke-dashoffset;
-}
-
-.wire-paused {
-  animation-play-state: paused !important;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wire-animated {
-    animation: none;
-  }
+/* Crisp Static SVG Routing Wires (zero idle paint loop) */
+.wire-stroke {
+  stroke-dasharray: 4 5;
 }
 
 /* Dotted Grid Canvas Background */
@@ -165,4 +141,63 @@ button * {
   background-color: #0b0c10;
   background-image: radial-gradient(circle, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
   background-size: 14px 14px;
+}
+
+/* Scrollable item style/layout isolation */
+.contain-row {
+  contain: layout style;
+}
+
+/* Pure GPU-composited Sidebar gliding pills & tooltips */
+.sidebar-spring-pill {
+  will-change: transform;
+  transition: transform 300ms cubic-bezier(0.22, 1.32, 0.36, 1);
+}
+
+.sidebar-hover-pill {
+  will-change: transform, opacity;
+  transition: transform 240ms cubic-bezier(0.22, 1.25, 0.36, 1), opacity 140ms ease-out;
+}
+
+.sidebar-tooltip {
+  will-change: transform, opacity;
+  contain: layout style paint;
+  transition: opacity 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.22, 1.25, 0.36, 1);
+}
+
+/* Keep-alive GPU-composited tab transitions (preserves Blink LayoutTree without display:none rebuilds) */
+@keyframes tabPaneEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.tab-pane {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: #111216;
+  contain: strict;
+  will-change: transform, opacity;
+}
+
+.tab-pane-active {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  z-index: 2;
+  animation: tabPaneEnter 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tab-pane-inactive {
+  opacity: 0;
+  transform: translate3d(0, -6px, 0);
+  z-index: 0;
+  transition: opacity 110ms ease-out, transform 110ms ease-out;
 }
