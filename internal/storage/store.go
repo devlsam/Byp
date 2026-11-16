@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -36,9 +37,12 @@ type Settings struct {
 	UpstreamHost      string   `json:"upstreamHost"` // External SOCKS5 upstream host/IP for upstream mode
 	UpstreamPort      int      `json:"upstreamPort"` // External SOCKS5 upstream port for upstream mode
 	SelectedProfileID string   `json:"selectedProfileId"`
-	AutoConnect       bool     `json:"autoConnect"`
-	AutoStart         bool     `json:"autoStart"`         // Launch on Windows Startup (default: true)
-	DnsProvider       string   `json:"dnsProvider"`       // "cloudflare", "google", "quad9", "shecan", "electro", "custom"
+	AutoConnect                bool     `json:"autoConnect"`
+	AutoStart                  bool     `json:"autoStart"`                  // Launch on Windows Startup (default: true)
+	AutoCheckUpdates           bool     `json:"autoCheckUpdates"`           // Periodic background update check (default: true)
+	AutoCheckUpdatesConfigured bool     `json:"autoCheckUpdatesConfigured"` // tracks migration so default-ON applies once to legacy configs
+	AutoCheckUpdateHours       int      `json:"autoCheckUpdateHours"`       // Periodic check interval in hours (1..24, default: 4)
+	DnsProvider                string   `json:"dnsProvider"`                // "cloudflare", "google", "quad9", "shecan", "electro", "custom"
 	PrimaryDNS        string   `json:"primaryDns"`        // e.g. "1.1.1.1"
 	SecondaryDNS      string   `json:"secondaryDns"`      // e.g. "1.0.0.1"
 	SplitTunnelMode    string   `json:"splitTunnelMode"`   // "all", "whitelist", "blacklist"
@@ -67,6 +71,25 @@ type Settings struct {
 }
 
 const currentTunConfigVersion = 2
+
+// NormalizeUpdateCheckHours clamps the periodic auto-update interval to [1..24] hours (default 4).
+func NormalizeUpdateCheckHours(hours int) int {
+	if hours <= 0 {
+		return 4
+	}
+	if hours > 24 {
+		return 24
+	}
+	return hours
+}
+
+func applyUpdateSettingsDefaults(st *Settings) {
+	if !st.AutoCheckUpdatesConfigured {
+		st.AutoCheckUpdatesConfigured = true
+		st.AutoCheckUpdates = true
+	}
+	st.AutoCheckUpdateHours = NormalizeUpdateCheckHours(st.AutoCheckUpdateHours)
+}
 
 func applyTunSettingsDefaults(st *Settings) {
 	if st.TunEngine != "tun2socks" && st.TunEngine != "zeltun" {
@@ -154,14 +177,17 @@ func NewStore() (*Store, error) {
 			Profiles:      []Profile{},
 			Subscriptions: []Subscription{},
 			Settings: Settings{
-				Mode:            "tun",
-				SocksPort:       10808,
-				HttpPort:        10809,
-				UpstreamHost:    "127.0.0.1",
-				UpstreamPort:    10808,
-				AutoConnect:     false,
-				AutoStart:       true,
-				DnsProvider:     "cloudflare",
+				Mode:                       "tun",
+				SocksPort:                  10808,
+				HttpPort:                   10809,
+				UpstreamHost:               "127.0.0.1",
+				UpstreamPort:               10808,
+				AutoConnect:                false,
+				AutoStart:                  true,
+				AutoCheckUpdates:           true,
+				AutoCheckUpdatesConfigured: true,
+				AutoCheckUpdateHours:       4,
+				DnsProvider:                "cloudflare",
 				PrimaryDNS:          "1.1.1.1",
 				SecondaryDNS:        "1.0.0.1",
 				SplitTunnelMode:     "all",
@@ -237,16 +263,51 @@ func (s *Store) load() error {
 	if data.Settings.SplitTunnelApps == nil {
 		data.Settings.SplitTunnelApps = []string{}
 	}
+	applyUpdateSettingsDefaults(&data.Settings)
 	applyTunSettingsDefaults(&data.Settings)
 	if data.Profiles == nil {
 		data.Profiles = []Profile{}
 	}
+	repairedIDs := ensureUniqueProfileIDs(data.Profiles)
 	if data.Subscriptions == nil {
 		data.Subscriptions = []Subscription{}
 	}
 
 	s.data = data
+	if repairedIDs {
+		s.scheduleSaveLocked()
+	}
 	return nil
+}
+
+func nextUniqueProfileID(seen map[string]struct{}, baseNano int64, seq *int) string {
+	for {
+		candidate := fmt.Sprintf("prof-%d-%d", baseNano, *seq)
+		*seq++
+		if _, exists := seen[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
+func ensureUniqueProfileIDs(profiles []Profile) bool {
+	if len(profiles) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(profiles))
+	changed := false
+	baseNano := time.Now().UnixNano()
+	seq := 0
+	for i := range profiles {
+		id := profiles[i].ID
+		if _, dup := seen[id]; id == "" || dup {
+			id = nextUniqueProfileID(seen, baseNano, &seq)
+			profiles[i].ID = id
+			changed = true
+		}
+		seen[id] = struct{}{}
+	}
+	return changed
 }
 
 func (s *Store) save() error {
@@ -342,6 +403,22 @@ func (s *Store) AddProfiles(profiles []Profile) error {
 		}
 	}
 	if len(toPrepend) > 0 {
+		seen := make(map[string]struct{}, len(s.data.Profiles)+len(toPrepend))
+		for _, existing := range s.data.Profiles {
+			if existing.ID != "" {
+				seen[existing.ID] = struct{}{}
+			}
+		}
+		baseNano := time.Now().UnixNano()
+		seq := 0
+		for i := range toPrepend {
+			id := toPrepend[i].ID
+			if _, exists := seen[id]; id == "" || exists {
+				id = nextUniqueProfileID(seen, baseNano, &seq)
+				toPrepend[i].ID = id
+			}
+			seen[id] = struct{}{}
+		}
 		// Prepend new profiles so recently added configurations always appear first
 		s.data.Profiles = append(toPrepend, s.data.Profiles...)
 	}

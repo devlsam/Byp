@@ -65,3 +65,62 @@ func TestApplyTunSettingsDefaultsMigrationAndPreservation(t *testing.T) {
 	}
 }
 
+func TestApplyUpdateSettingsDefaultsMigrationAndPreservation(t *testing.T) {
+	// 1. Legacy config missing autoCheckUpdatesConfigured migrates once to default ON (true) and 4h.
+	legacy := Settings{}
+	applyUpdateSettingsDefaults(&legacy)
+	if !legacy.AutoCheckUpdatesConfigured || !legacy.AutoCheckUpdates || legacy.AutoCheckUpdateHours != 4 {
+		t.Fatalf("expected legacy config to default AutoCheckUpdates=true and 4h, got %+v", legacy)
+	}
+
+	// 2. User who explicitly disabled periodic auto-check retains false and custom 1..24h interval.
+	disabled := Settings{
+		AutoCheckUpdatesConfigured: true,
+		AutoCheckUpdates:           false,
+		AutoCheckUpdateHours:       12,
+	}
+	applyUpdateSettingsDefaults(&disabled)
+	if disabled.AutoCheckUpdates || !disabled.AutoCheckUpdatesConfigured || disabled.AutoCheckUpdateHours != 12 {
+		t.Fatalf("expected explicit AutoCheckUpdates=false and 12h to be preserved, got %+v", disabled)
+	}
+
+	// 3. Out-of-range hour values clamp cleanly to 1..24 (0 -> 4, >24 -> 24).
+	if got := NormalizeUpdateCheckHours(0); got != 4 {
+		t.Fatalf("expected 0h -> 4h default, got %d", got)
+	}
+	if got := NormalizeUpdateCheckHours(48); got != 24 {
+		t.Fatalf("expected 48h -> 24h clamp, got %d", got)
+	}
+	if got := NormalizeUpdateCheckHours(1); got != 1 {
+		t.Fatalf("expected 1h preserved, got %d", got)
+	}
+}
+
+func TestEnsureUniqueProfileIDs(t *testing.T) {
+	profiles := []Profile{
+		{ID: "prof-1", Name: "First"},
+		{ID: "prof-1", Name: "Duplicate"},
+		{ID: "", Name: "Empty"},
+		{ID: "prof-2", Name: "Unique"},
+	}
+	if !ensureUniqueProfileIDs(profiles) {
+		t.Fatalf("expected ensureUniqueProfileIDs to report changes")
+	}
+	if profiles[0].ID != "prof-1" || profiles[3].ID != "prof-2" {
+		t.Fatalf("existing unique IDs should be preserved, got %+v", profiles)
+	}
+	seen := make(map[string]struct{}, len(profiles))
+	for _, p := range profiles {
+		if p.ID == "" {
+			t.Fatalf("expected non-empty profile ID, got %+v", p)
+		}
+		if _, exists := seen[p.ID]; exists {
+			t.Fatalf("expected unique IDs after repair, duplicate %q in %+v", p.ID, profiles)
+		}
+		seen[p.ID] = struct{}{}
+	}
+	if ensureUniqueProfileIDs(profiles) {
+		t.Fatalf("expected second pass to report no changes")
+	}
+}
+
