@@ -26,7 +26,7 @@ export const UpdatePromptModal: React.FC<UpdatePromptModalProps> = ({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 select-none">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/82 p-4 select-none">
         <motion.div
           initial={{ opacity: 0, scale: 0.94, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -35,7 +35,10 @@ export const UpdatePromptModal: React.FC<UpdatePromptModalProps> = ({
           className="modern-surface rounded-3xl w-full max-w-sm p-5 shadow-2xl border border-white/20 relative overflow-hidden"
         >
           {/* Subtle monochrome ambient glow */}
-          <div className="absolute top-0 right-0 w-44 h-44 bg-white/[0.04] rounded-full blur-3xl pointer-events-none -z-10" />
+          <div
+            className="absolute top-0 right-0 w-44 h-44 rounded-full pointer-events-none -z-10"
+            style={{ background: 'radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%)' }}
+          />
 
           {/* Header */}
           <div className="flex items-start justify-between pb-3 border-b border-white/10">

@@ -40,7 +40,7 @@ export const ConfigEditModal: React.FC<ConfigEditModalProps> = ({
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4">
       <div className="modern-surface rounded-3xl w-full max-w-xl p-5 shadow-2xl border border-white/20 max-h-[90vh] flex flex-col">
         {/* Top Header */}
         <div className="flex items-center justify-between pb-3.5 border-b border-white/10 shrink-0">
