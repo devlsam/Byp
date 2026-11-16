@@ -40,6 +40,7 @@ import {
   faSliders,
   faPenToSquare,
   faCopy,
+  faBoxesPacking,
 } from '@fortawesome/free-solid-svg-icons';
 import { faObjectUngroup } from '@fortawesome/free-regular-svg-icons';
 
@@ -52,28 +53,33 @@ export interface IconProps extends Omit<React.SVGAttributes<SVGSVGElement>, 'mas
   size?: number | string;
 }
 
+const EMPTY_STYLE: React.CSSProperties = {};
+
 function createIcon(iconDef: IconDefinition, displayName: string) {
-  const Component = React.forwardRef<SVGSVGElement, IconProps>((props, ref) => {
-    const { className, style, size, ...rest } = props;
-    const customStyle: React.CSSProperties = { ...style };
+  const Component = React.memo(
+    React.forwardRef<SVGSVGElement, IconProps>((props, ref) => {
+      const { className, style, size, ...rest } = props;
+      let customStyle: React.CSSProperties = style || EMPTY_STYLE;
 
-    if (size) {
-      const dimension = typeof size === 'number' ? `${size}px` : size;
-      customStyle.width = dimension;
-      customStyle.height = dimension;
-    }
+      if (size !== undefined) {
+        const dimension = typeof size === 'number' ? `${size}px` : size;
+        customStyle = style
+          ? { ...style, width: dimension, height: dimension }
+          : { width: dimension, height: dimension };
+      }
 
-    return (
-      <FontAwesomeIcon
-        // @ts-ignore
-        ref={ref}
-        icon={iconDef}
-        className={className}
-        style={customStyle as any}
-        {...rest}
-      />
-    );
-  });
+      return (
+        <FontAwesomeIcon
+          // @ts-ignore
+          ref={ref}
+          icon={iconDef}
+          className={className}
+          style={customStyle as any}
+          {...rest}
+        />
+      );
+    })
+  );
 
   Component.displayName = displayName;
   return Component;
@@ -119,6 +125,7 @@ export const Sliders = createIcon(faSliders, 'Sliders');
 export const ObjectUngroup = createIcon(faObjectUngroup, 'ObjectUngroup');
 export const Edit = createIcon(faPenToSquare, 'Edit');
 export const Copy = createIcon(faCopy, 'Copy');
+export const BoxesPacking = createIcon(faBoxesPacking, 'BoxesPacking');
 
 // Custom Brand Application Logo (Lightning Bolt + Star Wing Emblem)
 export const AppLogo = React.forwardRef<SVGSVGElement, React.SVGProps<SVGSVGElement>>(
@@ -164,4 +171,24 @@ export const Github = React.forwardRef<SVGSVGElement, React.SVGProps<SVGSVGEleme
   )
 );
 Github.displayName = 'Github';
+
+// Zeltun Engine Icon
+export const ZeltunIcon = React.forwardRef<SVGSVGElement, React.SVGProps<SVGSVGElement>>(
+  ({ className = "w-4 h-4", fill = "currentColor", ...props }, ref) => (
+    <svg
+      ref={ref}
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 160 160"
+      fill="none"
+      className={className}
+      {...props}
+    >
+      <path
+        d="M16 3H84L60 30H16ZM98 3H144L88 66H126L46 157L78 84H38ZM37 97H62L41 147H16ZM93 120H144V147H69Z"
+        fill={fill}
+      />
+    </svg>
+  )
+);
+ZeltunIcon.displayName = 'ZeltunIcon';
 

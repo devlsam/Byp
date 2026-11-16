@@ -1,4 +1,4 @@
-import { Headphones, Zap, Globe, Gamepad, Server, ObjectUngroup, Sliders, Settings as SettingsIcon } from '../icons';
+import { Headphones, Zap, Globe, Gamepad, BoxesPacking, ObjectUngroup, Cpu, Sliders, Settings as SettingsIcon } from '../icons';
 import type { DnsPreset, PopularPreset } from '../types';
 
 export const POPULAR_PRESETS: PopularPreset[] = [
@@ -55,8 +55,9 @@ export const DNS_PRESETS: DnsPreset[] = [
 
 export const NAV_TABS = [
   { id: 'connect', icon: Zap, label: 'Connect & Stats', shortcut: '1' },
-  { id: 'configs', icon: Server, label: 'Configs & Nodes', shortcut: '2' },
+  { id: 'configs', icon: BoxesPacking, label: 'Configs & Nodes', shortcut: '2' },
   { id: 'split', icon: ObjectUngroup, label: 'Split Tunnel', shortcut: '3' },
-  { id: 'socks', icon: Sliders, label: 'Inbound & Network', shortcut: '4' },
-  { id: 'app_settings', icon: SettingsIcon, label: 'App Settings', shortcut: '5' },
+  { id: 'tun_settings', icon: Cpu, label: 'TUN Settings', shortcut: '4' },
+  { id: 'socks', icon: Sliders, label: 'Inbound & Network', shortcut: '5' },
+  { id: 'app_settings', icon: SettingsIcon, label: 'App Settings', shortcut: '6' },
 ] as const;

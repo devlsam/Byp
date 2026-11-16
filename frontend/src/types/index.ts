@@ -27,7 +27,7 @@ export interface ConfigFormState {
   rawJson: string;
 }
 
-export type AppTab = 'connect' | 'configs' | 'split' | 'socks' | 'app_settings';
+export type AppTab = 'connect' | 'configs' | 'split' | 'tun_settings' | 'socks' | 'app_settings';
 
 export interface WireEndpoint {
   id: string;
