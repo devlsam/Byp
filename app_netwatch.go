@@ -30,7 +30,7 @@ func (a *AppService) startNetworkWatcher(ctx context.Context, profileID string) 
 			mode := a.activeMode
 			a.mu.Unlock()
 
-			if !connected || mode != "tun" {
+			if !connected || !isTunMode(mode) {
 				return
 			}
 
@@ -57,11 +57,13 @@ func (a *AppService) startNetworkWatcher(ctx context.Context, profileID string) 
 
 				a.tunMgr.UpdatePhysicalAdapter(currentGateway, info.LanIP, info.InterfaceIndex)
 
-				profile := a.store.GetProfile(profileID)
-				if profile != nil {
-					if fullConfig, err := a.buildProfileConfig(profile, currentIP); err == nil {
-						_ = a.xrayMgr.Start(fullConfig)
-						a.log("Xray re-bound to new physical IP: %s", currentIP)
+				if profileID != "" {
+					profile := a.store.GetProfile(profileID)
+					if profile != nil {
+						if fullConfig, err := a.buildProfileConfig(profile, currentIP); err == nil {
+							_ = a.xrayMgr.Start(fullConfig)
+							a.log("Xray re-bound to new physical IP: %s", currentIP)
+						}
 					}
 				}
 			}
