@@ -78,7 +78,9 @@ func main() {
 		},
 	}
 
-	// Configure Auto-Updater backed by GitHub Releases public API
+	// Configure Auto-Updater backed by GitHub Releases public API.
+	// Periodic background checks (CheckAndInstall popup window) are driven by AppService
+	// according to settings.AutoCheckUpdates and settings.AutoCheckUpdateHours.
 	ghProvider, err := github.New(github.Config{
 		Repository: "devlsam/Byp",
 		Prerelease: false,
@@ -88,7 +90,6 @@ func main() {
 		_ = app.Updater.Init(updater.Config{
 			CurrentVersion: AppVersion,
 			Providers:      []updater.Provider{ghProvider},
-			CheckInterval:  4 * time.Hour,
 		})
 	} else {
 		log.Printf("Failed to initialize GitHub updater: %v", err)

@@ -31,6 +31,9 @@ type AppService struct {
 	app             *application.App
 	watchCtx        context.Context
 	watchCancel     context.CancelFunc
+	updaterMu       sync.Mutex
+	updaterCancel   context.CancelFunc
+	updaterHours    int
 }
 
 // NewAppService initializes a new AppService with storage and engine managers.
@@ -63,12 +66,14 @@ func (a *AppService) ServiceStartup(ctx context.Context, options application.Ser
 
 	go a.listenForKillSignals()
 	go a.statsLoop()
+	a.syncPeriodicUpdateChecker(initialSettings.AutoCheckUpdates, initialSettings.AutoCheckUpdateHours)
 	return nil
 }
 
 // ServiceShutdown performs graceful cleanup of proxy and TUN routes upon exit.
 func (a *AppService) ServiceShutdown() error {
 	a.log("Shutting down - cleaning up proxies and TUN routes")
+	a.syncPeriodicUpdateChecker(false, 0)
 	_ = a.Disconnect()
 	if a.store != nil {
 		_ = a.store.Flush()

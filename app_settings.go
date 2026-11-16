@@ -69,6 +69,8 @@ func (a *AppService) SaveSettings(settings storage.Settings) error {
 
 	settings.TunConfigured = true
 	settings.TunConfigVersion = 2
+	settings.AutoCheckUpdatesConfigured = true
+	settings.AutoCheckUpdateHours = storage.NormalizeUpdateCheckHours(settings.AutoCheckUpdateHours)
 	oldSettings := a.store.GetSettings()
 	upHost, upPort := normalizedUpstream(settings)
 	settings.UpstreamHost = upHost
@@ -132,7 +134,12 @@ func (a *AppService) SaveSettings(settings storage.Settings) error {
 		}
 	}
 
-	a.log("Settings updated (Engine=%s, AutoStart=%v, DNS=%s)", opts.Engine, settings.AutoStart, settings.PrimaryDNS)
+	if oldSettings.AutoCheckUpdates != settings.AutoCheckUpdates ||
+		oldSettings.AutoCheckUpdateHours != settings.AutoCheckUpdateHours {
+		a.syncPeriodicUpdateChecker(settings.AutoCheckUpdates, settings.AutoCheckUpdateHours)
+	}
+
+	a.log("Settings updated (Engine=%s, AutoStart=%v, AutoCheckUpdates=%v/%dh, DNS=%s)", opts.Engine, settings.AutoStart, settings.AutoCheckUpdates, settings.AutoCheckUpdateHours, settings.PrimaryDNS)
 	return nil
 }
 
