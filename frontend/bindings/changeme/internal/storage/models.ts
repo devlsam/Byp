@@ -44,6 +44,21 @@ export interface Settings {
     "autoStart": boolean;
 
     /**
+     * Periodic background update check (default: true)
+     */
+    "autoCheckUpdates": boolean;
+
+    /**
+     * tracks migration so default-ON applies once to legacy configs
+     */
+    "autoCheckUpdatesConfigured": boolean;
+
+    /**
+     * Periodic check interval in hours (1..24, default: 4)
+     */
+    "autoCheckUpdateHours": number;
+
+    /**
      * "cloudflare", "google", "quad9", "shecan", "electro", "custom"
      */
     "dnsProvider": string;
