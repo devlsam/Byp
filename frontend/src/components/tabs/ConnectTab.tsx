@@ -1,6 +1,74 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Lottie, type LottieHandle } from 'lottie-react';
 import connectLottie from '../../assets/connect_lottie.json';
+
+const LOTTIE_RENDERER_SETTINGS = {
+  clearCanvas: true,
+  dpr: typeof window !== 'undefined' ? Math.max(window.devicePixelRatio || 1, 2) : 2,
+};
+
+function seekAbsoluteRestingFrame(handle: LottieHandle, frame: 0 | 50) {
+  const item = handle.animationItem;
+  if (item) {
+    // Always reset segment bounds before seeking so frame indices are absolute across [0..100]
+    item.resetSegments(true);
+    item.setDirection(1);
+    item.goToAndStop(frame, true);
+    return;
+  }
+  handle.setDirection('forward');
+  handle.resetSegments();
+  handle.seek(frame);
+  handle.pause();
+}
+
+function transitionLottieToState(handle: LottieHandle, nextConnected: boolean) {
+  const item = handle.animationItem;
+  if (!item) {
+    handle.playSegments(nextConnected ? [0, 50] : [60, 100], { queue: false });
+    return;
+  }
+
+  const rawPos = item.isSubframeEnabled ? item.currentRawFrame : item.currentFrame;
+  const absFrame = item.firstFrame + rawPos;
+
+  if (nextConnected) {
+    if (absFrame <= 1 || absFrame >= 98.5) {
+      handle.playSegments([0, 50], { queue: false });
+      return;
+    }
+    if (absFrame >= 49 && absFrame <= 60.9) {
+      seekAbsoluteRestingFrame(handle, 50);
+      return;
+    }
+    if (absFrame > 60.9 && absFrame < 98.5) {
+      // Reverse smoothly from mid-disconnect right back into steady locked frame 60
+      const start = Math.max(61, Math.min(99, Math.round(absFrame)));
+      handle.playSegments([start, 60], { queue: false });
+      return;
+    }
+    const start = Math.max(0, Math.min(49, Math.round(absFrame)));
+    handle.playSegments([start, 50], { queue: false });
+    return;
+  }
+
+  if (absFrame >= 39.5 && absFrame <= 60.5) {
+    handle.playSegments([60, 100], { queue: false });
+    return;
+  }
+  if (absFrame > 60.5 && absFrame < 99) {
+    const start = Math.max(60, Math.min(99, Math.round(absFrame)));
+    handle.playSegments([start, 100], { queue: false });
+    return;
+  }
+  if (absFrame >= 1.5 && absFrame < 39.5) {
+    // Reverse smoothly from mid-connect windup back to idle 0 instead of snapping to frame 60
+    const start = Math.max(2, Math.min(39, Math.round(absFrame)));
+    handle.playSegments([start, 0], { queue: false });
+    return;
+  }
+  seekAbsoluteRestingFrame(handle, 0);
+}
 import { Shield, ChevronRight, ZeltunIcon } from '../../icons';
 import { LiveTrafficStats } from '../common/LiveTrafficStats';
 import { formatTimer } from '../../utils/formatters';
@@ -104,6 +172,8 @@ export const ConnectTab: React.FC<ConnectTabProps> = React.memo(({
   const lottieRef = useRef<LottieHandle>(null);
   const isFirstMount = useRef(true);
   const isReadyRef = useRef(false);
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
   const prevConnectedRef = useRef(connected);
   const [testingUpstream, setTestingUpstream] = useState(false);
   const [upstreamProbe, setUpstreamProbe] = useState<UpstreamTestResult | null>(null);
@@ -139,47 +209,37 @@ export const ConnectTab: React.FC<ConnectTabProps> = React.memo(({
     onModeChange(next);
   };
 
-  const handleAnimationReady = () => {
+  const handleAnimationReady = useCallback(() => {
     isReadyRef.current = true;
-    if (isFirstMount.current) {
-      if (connected) {
-        lottieRef.current?.seek(50);
+    const handle = lottieRef.current;
+    const latestConnected = connectedRef.current;
+    if (handle) {
+      if (isFirstMount.current || latestConnected === prevConnectedRef.current) {
+        seekAbsoluteRestingFrame(handle, latestConnected ? 50 : 0);
       } else {
-        lottieRef.current?.seek(0);
-      }
-    } else {
-      if (connected !== prevConnectedRef.current) {
-        if (connected) {
-          lottieRef.current?.playSegments([0, 50], { queue: false });
-        } else {
-          lottieRef.current?.playSegments([60, 100], { queue: false });
-        }
-      } else {
-        if (connected) {
-          lottieRef.current?.seek(50);
-        } else {
-          lottieRef.current?.seek(0);
-        }
+        transitionLottieToState(handle, latestConnected);
       }
     }
-    prevConnectedRef.current = connected;
-  };
+    prevConnectedRef.current = latestConnected;
+  }, []);
+
+  const lottieSubscriptions = useMemo(
+    () => ({ ready: handleAnimationReady }),
+    [handleAnimationReady]
+  );
 
   useEffect(() => {
     if (isFirstMount.current) {
       isFirstMount.current = false;
+      prevConnectedRef.current = connected;
       return;
     }
 
-    if (!isReadyRef.current) return;
+    if (!isReadyRef.current || !lottieRef.current) return;
 
     if (connected !== prevConnectedRef.current) {
-      if (connected) {
-        lottieRef.current?.playSegments([0, 50], { queue: false });
-      } else {
-        lottieRef.current?.playSegments([60, 100], { queue: false });
-      }
       prevConnectedRef.current = connected;
+      transitionLottieToState(lottieRef.current, connected);
     }
   }, [connected]);
 
@@ -239,17 +299,12 @@ export const ConnectTab: React.FC<ConnectTabProps> = React.memo(({
             lottieRef={lottieRef}
             src={connectLottie}
             renderer="canvas"
-            rendererSettings={{
-              clearCanvas: true,
-              dpr: typeof window !== 'undefined' ? Math.max(window.devicePixelRatio || 1, 2) : 2,
-            }}
+            rendererSettings={LOTTIE_RENDERER_SETTINGS}
             autoplay={false}
             loop={false}
-            subscriptions={{
-              ready: handleAnimationReady,
-            }}
+            subscriptions={lottieSubscriptions}
             style={{ contain: 'layout style paint', willChange: 'transform, opacity' }}
-            className={`w-40 h-40 select-none pointer-events-none ${
+            className={`w-40 h-40 select-none pointer-events-none transition-opacity duration-200 ${
               connected
                 ? 'opacity-100 drop-shadow-[0_0_16px_rgba(255,255,255,0.5)]'
                 : 'opacity-75 group-hover:opacity-100'

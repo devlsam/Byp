@@ -292,6 +292,12 @@ export default function App() {
   const updatingSubIdRef = useRef(updatingSubId);
   updatingSubIdRef.current = updatingSubId;
   const lastRoutesJsonRef = useRef<string>(JSON.stringify(appRoutes));
+  const desiredVpnTargetRef = useRef<{
+    connected: boolean;
+    profileId: string;
+    mode: string;
+  } | null>(null);
+  const vpnSyncRunningRef = useRef<boolean>(false);
 
   // Fetch initial state in parallel so React commits once instead of across 3 IPC waterfalls
   const refreshData = useCallback(async (): Promise<Subscription[]> => {
@@ -306,12 +312,17 @@ export default function App() {
       const safeSubs = sList || [];
       const nextMode = state.activeMode || state.settings?.mode || 'tun';
 
-      setConnected((prev) => (prev === state.connected ? prev : state.connected));
-      setConnectedAt((prev) => (state.connected ? prev ?? Date.now() : null));
-      setActiveProfileId((prev) =>
-        prev === state.activeProfileId ? prev : state.activeProfileId
-      );
-      setMode((prev) => (prev === nextMode ? prev : nextMode));
+      if (!vpnSyncRunningRef.current) {
+        connectedRef.current = state.connected;
+        activeProfileIdRef.current = state.activeProfileId;
+        modeRef.current = nextMode;
+        setConnected((prev) => (prev === state.connected ? prev : state.connected));
+        setConnectedAt((prev) => (state.connected ? prev ?? Date.now() : null));
+        setActiveProfileId((prev) =>
+          prev === state.activeProfileId ? prev : state.activeProfileId
+        );
+        setMode((prev) => (prev === nextMode ? prev : nextMode));
+      }
       setCoreVersion((prev) => (prev === state.coreVersion ? prev : state.coreVersion));
 
       if (state.settings) {
@@ -452,16 +463,24 @@ export default function App() {
 
     const unbindVpnStatus = Events.On('vpn:status', (event: any) => {
       if (event && event.data) {
+        // Ignore intermediate status events while a coalesced Connect/Disconnect loop owns state
+        if (vpnSyncRunningRef.current) return;
         const status = event.data;
-        setConnected(status.connected);
-        setConnectedAt((prev) => (status.connected ? prev ?? Date.now() : null));
+        const nextConnected = Boolean(status.connected);
+        connectedRef.current = nextConnected;
+        setConnected(nextConnected);
+        setConnectedAt((prev) => (nextConnected ? prev ?? Date.now() : null));
         if (status.activeProfileId) {
+          activeProfileIdRef.current = status.activeProfileId;
+          selectedProfileIdRef.current = status.activeProfileId;
           setActiveProfileId(status.activeProfileId);
           setSelectedProfileId(status.activeProfileId);
-        } else if (!status.connected) {
+        } else if (!nextConnected) {
+          activeProfileIdRef.current = '';
           setActiveProfileId('');
         }
         if (status.activeMode) {
+          modeRef.current = status.activeMode;
           setMode(status.activeMode);
         }
       }
@@ -539,6 +558,51 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleSelectTab]);
 
+  // Coalescing single-flight reconciler prevents rapid Connect/Disconnect clicks from queuing out-of-order RPCs
+  const enqueueVpnTarget = useCallback(
+    async (target: { connected: boolean; profileId: string; mode: string }) => {
+      desiredVpnTargetRef.current = target;
+      if (vpnSyncRunningRef.current) {
+        return;
+      }
+
+      vpnSyncRunningRef.current = true;
+      try {
+        while (desiredVpnTargetRef.current !== null) {
+          const next = desiredVpnTargetRef.current;
+          desiredVpnTargetRef.current = null;
+
+          if (next.connected) {
+            try {
+              await AppService.Connect(next.profileId, next.mode);
+            } catch (err: any) {
+              if (desiredVpnTargetRef.current === null) {
+                connectedRef.current = false;
+                activeProfileIdRef.current = '';
+                setConnected(false);
+                setConnectedAt(null);
+                setActiveProfileId('');
+                toast.error('Connection Failed', err?.message || String(err));
+              }
+            }
+          } else {
+            try {
+              await AppService.Disconnect();
+            } catch (err: any) {
+              if (desiredVpnTargetRef.current === null) {
+                toast.error('Disconnect Error', err?.message || String(err));
+              }
+            }
+          }
+        }
+      } finally {
+        vpnSyncRunningRef.current = false;
+        await refreshData();
+      }
+    },
+    [refreshData]
+  );
+
   // Optimistic Zero-Lag Connect Toggle
   const handleToggleConnect = useCallback(() => {
     const currentMode = modeRef.current;
@@ -557,44 +621,39 @@ export default function App() {
     connectedRef.current = nextState;
     setConnected(nextState);
     if (nextState) {
+      activeProfileIdRef.current = targetId;
       setConnectedAt(Date.now());
       setActiveProfileId(targetId);
     } else {
+      activeProfileIdRef.current = '';
       setConnectedAt(null);
       setActiveProfileId('');
     }
 
-    if (nextState) {
-      AppService.Connect(targetId, currentMode)
-        .catch((err: any) => {
-          connectedRef.current = false;
-          setConnected(false);
-          setConnectedAt(null);
-          setActiveProfileId('');
-          toast.error('Connection Failed', err?.message || String(err));
-        })
-        .finally(() => {
-          refreshData();
-        });
-    } else {
-      AppService.Disconnect()
-        .catch((err: any) => {
-          toast.error('Disconnect Error', err?.message || String(err));
-        })
-        .finally(() => {
-          refreshData();
-        });
-    }
-  }, [refreshData]);
+    void enqueueVpnTarget({
+      connected: nextState,
+      profileId: targetId,
+      mode: currentMode,
+    });
+  }, [enqueueVpnTarget]);
 
-  const handleSelectQuickProfile = useCallback((id: string) => {
-    selectedProfileIdRef.current = id;
-    setSelectedProfileId(id);
-    setShowQuickPicker(false);
-    if (connectedRef.current) {
-      AppService.Connect(id, modeRef.current);
-    }
-  }, []);
+  const handleSelectQuickProfile = useCallback(
+    (id: string) => {
+      selectedProfileIdRef.current = id;
+      setSelectedProfileId(id);
+      setShowQuickPicker(false);
+      if (connectedRef.current) {
+        activeProfileIdRef.current = id;
+        setActiveProfileId(id);
+        void enqueueVpnTarget({
+          connected: true,
+          profileId: id,
+          mode: modeRef.current,
+        });
+      }
+    },
+    [enqueueVpnTarget]
+  );
 
   const handleSelectConfigProfile = useCallback((id: string) => {
     selectedProfileIdRef.current = id;
@@ -608,6 +667,7 @@ export default function App() {
   // Change routing mode
   const handleModeChange = useCallback(
     (newMode: string) => {
+      modeRef.current = newMode;
       setMode(newMode);
       const updated: Settings = { ...settingsRef.current, mode: newMode };
       settingsRef.current = updated;
@@ -998,6 +1058,7 @@ export default function App() {
     if (!ok) return;
 
     try {
+      desiredVpnTargetRef.current = null;
       connectedRef.current = false;
       activeProfileIdRef.current = '';
       setConnected(false);
