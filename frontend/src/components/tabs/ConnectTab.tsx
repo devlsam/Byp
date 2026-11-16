@@ -1,18 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { Shield, Power, ChevronRight } from '../../icons';
+import React, { useState, useEffect, useRef } from 'react';
+import { Lottie, type LottieHandle } from 'lottie-react';
+import connectLottie from '../../assets/connect_lottie.json';
+import { Shield, ChevronRight, ZeltunIcon } from '../../icons';
 import { LiveTrafficStats } from '../common/LiveTrafficStats';
 import { formatTimer } from '../../utils/formatters';
+import { AppService } from '../../../bindings/changeme';
 import type { Profile } from '../../../bindings/changeme/internal/storage/models';
+import type { UpstreamTestResult } from '../../../bindings/changeme/internal/tun/models';
 import type { AppTab } from '../../types';
 
 interface ConnectTabProps {
   connected: boolean;
+  connectedAt?: number | null;
+  isActive?: boolean;
   mode: string;
   sessionSeconds?: number;
   activeProfile?: Profile;
   profiles: Profile[];
   selectedProfileId: string;
+  upstreamHost?: string;
+  upstreamPort?: number;
   showQuickPicker: boolean;
   setShowQuickPicker: (show: boolean) => void;
   onToggleConnect: () => void;
@@ -24,24 +31,35 @@ interface ConnectTabProps {
 }
 
 /**
- * Isolated timer component that increments locally every second.
- * Prevents re-rendering ConnectTab or root App component tree!
+ * Isolated timer component that computes elapsed seconds from connectedAt and
+ * only ticks while the Connect tab is visible.
  */
-const SessionTimer: React.FC<{ connected: boolean }> = React.memo(({ connected }) => {
-  const [seconds, setSeconds] = useState(0);
+const SessionTimer: React.FC<{
+  connected: boolean;
+  connectedAt?: number | null;
+  isActive: boolean;
+}> = React.memo(({ connected, connectedAt, isActive }) => {
+  const [seconds, setSeconds] = useState(() =>
+    connected && connectedAt ? Math.max(0, Math.floor((Date.now() - connectedAt) / 1000)) : 0
+  );
 
   useEffect(() => {
-    let timer: any;
-    if (connected) {
+    if (!connected) {
       setSeconds(0);
-      timer = setInterval(() => {
-        setSeconds((s) => s + 1);
-      }, 1000);
-    } else {
-      setSeconds(0);
+      return;
     }
+
+    const origin = connectedAt || Date.now();
+    const syncElapsed = () => {
+      setSeconds(Math.max(0, Math.floor((Date.now() - origin) / 1000)));
+    };
+
+    syncElapsed();
+    if (!isActive) return;
+
+    const timer = setInterval(syncElapsed, 1000);
     return () => clearInterval(timer);
-  }, [connected]);
+  }, [connected, connectedAt, isActive]);
 
   if (!connected) return null;
 
@@ -64,13 +82,16 @@ SessionTimer.displayName = 'SessionTimer';
 /**
  * Connect and traffic monitoring dashboard tab.
  */
-export const ConnectTab: React.FC<ConnectTabProps> = ({
+export const ConnectTab: React.FC<ConnectTabProps> = React.memo(({
   connected,
+  connectedAt,
+  isActive = true,
   mode,
-  sessionSeconds,
   activeProfile,
   profiles,
   selectedProfileId,
+  upstreamHost = '127.0.0.1',
+  upstreamPort = 10808,
   showQuickPicker,
   setShowQuickPicker,
   onToggleConnect,
@@ -80,15 +101,90 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
   onPing,
   pingingMap,
 }) => {
+  const lottieRef = useRef<LottieHandle>(null);
+  const isFirstMount = useRef(true);
+  const isReadyRef = useRef(false);
+  const prevConnectedRef = useRef(connected);
+  const [testingUpstream, setTestingUpstream] = useState(false);
+  const [upstreamProbe, setUpstreamProbe] = useState<UpstreamTestResult | null>(null);
+
+  const cleanUpstreamHost = upstreamHost?.trim() || '127.0.0.1';
+  const cleanUpstreamPort = upstreamPort > 0 ? upstreamPort : 10808;
+
+  useEffect(() => {
+    setUpstreamProbe(null);
+  }, [cleanUpstreamHost, cleanUpstreamPort]);
+
+  const handleTestUpstream = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (testingUpstream) return;
+    setTestingUpstream(true);
+    try {
+      const res = await AppService.TestUpstreamProxy(cleanUpstreamHost, cleanUpstreamPort);
+      setUpstreamProbe(res);
+    } catch {
+      setUpstreamProbe(null);
+    } finally {
+      setTestingUpstream(false);
+    }
+  };
+
+  const handleCycleMode = () => {
+    const next =
+      mode === 'tun'
+        ? 'upstream'
+        : mode === 'upstream'
+        ? 'proxy'
+        : 'tun';
+    onModeChange(next);
+  };
+
+  const handleAnimationReady = () => {
+    isReadyRef.current = true;
+    if (isFirstMount.current) {
+      if (connected) {
+        lottieRef.current?.seek(50);
+      } else {
+        lottieRef.current?.seek(0);
+      }
+    } else {
+      if (connected !== prevConnectedRef.current) {
+        if (connected) {
+          lottieRef.current?.playSegments([0, 50], { queue: false });
+        } else {
+          lottieRef.current?.playSegments([60, 100], { queue: false });
+        }
+      } else {
+        if (connected) {
+          lottieRef.current?.seek(50);
+        } else {
+          lottieRef.current?.seek(0);
+        }
+      }
+    }
+    prevConnectedRef.current = connected;
+  };
+
+  useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
+
+    if (!isReadyRef.current) return;
+
+    if (connected !== prevConnectedRef.current) {
+      if (connected) {
+        lottieRef.current?.playSegments([0, 50], { queue: false });
+      } else {
+        lottieRef.current?.playSegments([60, 100], { queue: false });
+      }
+      prevConnectedRef.current = connected;
+    }
+  }, [connected]);
+
   return (
-    <motion.div
-      key="connect"
-      initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
-      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-      exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-      className="flex-1 flex flex-col p-5 space-y-5 overflow-y-auto no-scrollbar"
-    >
+    <div className="flex-1 flex flex-col p-5 space-y-5 overflow-y-auto no-scrollbar">
       {/* Top Bar: Clean modern header */}
       <div className="flex items-center justify-between">
         <div>
@@ -96,53 +192,166 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
             Dashboard
           </h1>
           <p className="text-[11px] text-zinc-400 font-medium tracking-normal mt-0.5">
-            {connected ? 'Encrypted Tunnel Active' : 'Ready to Connect'}
+            {connected
+              ? mode === 'upstream'
+                ? 'Upstream TUN Service Active'
+                : 'Encrypted Tunnel Active'
+              : 'Ready to Connect'}
           </p>
         </div>
 
         {/* Mode Toggle Glass Pill */}
         <button
-          onClick={() => onModeChange(mode === 'tun' ? 'proxy' : 'tun')}
-          className="text-[10px] font-mono font-semibold uppercase px-2.5 py-1 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-zinc-200 hover:text-white transition flex items-center space-x-1 shadow-sm"
+          onClick={handleCycleMode}
+          title="Click to switch mode (TUN / UPSTREAM / PROXY)"
+          className="text-[10px] font-mono font-semibold uppercase px-2.5 py-1 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-zinc-200 hover:text-white flex items-center space-x-1 shadow-sm cursor-pointer"
         >
-          <Shield className="w-3 h-3 text-white" />
+          {mode === 'tun' || mode === 'upstream' ? (
+            <ZeltunIcon className="w-3 h-3 text-white shrink-0" />
+          ) : (
+            <Shield className="w-3 h-3 text-white shrink-0" />
+          )}
           <span>{mode.toUpperCase()}</span>
         </button>
       </div>
 
       {/* HERO CONNECT BUTTON SECTION */}
       <div className="flex flex-col items-center justify-center py-2">
-        {/* Frosted Glass Power Button */}
         <button
+          type="button"
           onClick={onToggleConnect}
-          className={`w-36 h-36 rounded-full flex items-center justify-center btn-power-transition cursor-pointer transform ${
-            connected
-              ? 'glass-btn-active scale-[1.05]'
-              : 'glass-btn-idle hover:scale-[1.02]'
-          }`}
+          aria-label={connected ? 'Disconnect from VPN' : 'Connect to VPN'}
+          className="relative flex items-center justify-center p-0 bg-transparent border-0 outline-none cursor-pointer group focus:outline-none will-change-transform transition-transform duration-300 hover:scale-105 active:scale-95"
         >
-          <Power
-            className={`w-12 h-12 transition-all ${
+          {/* Subtle Ambient Radial Glow behind the icon when connected (no blur filter cost) */}
+          <div
+            className={`absolute w-36 h-36 rounded-full will-change-[opacity,transform] transition-[opacity,transform] duration-500 pointer-events-none -z-10 ${
+              connected ? 'opacity-100 scale-110' : 'opacity-0 scale-90'
+            }`}
+            style={{
+              contain: 'layout style paint',
+              background:
+                'radial-gradient(circle, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.03) 48%, transparent 72%)',
+            }}
+          />
+
+          <Lottie
+            lottieRef={lottieRef}
+            src={connectLottie}
+            renderer="canvas"
+            rendererSettings={{
+              clearCanvas: true,
+              dpr: typeof window !== 'undefined' ? Math.max(window.devicePixelRatio || 1, 2) : 2,
+            }}
+            autoplay={false}
+            loop={false}
+            subscriptions={{
+              ready: handleAnimationReady,
+            }}
+            style={{ contain: 'layout style paint', willChange: 'transform, opacity' }}
+            className={`w-40 h-40 select-none pointer-events-none ${
               connected
-                ? 'text-white drop-shadow-[0_0_16px_rgba(255,255,255,0.95)]'
-                : 'text-white/60 hover:text-white'
+                ? 'opacity-100 drop-shadow-[0_0_16px_rgba(255,255,255,0.5)]'
+                : 'opacity-75 group-hover:opacity-100'
             }`}
           />
         </button>
 
         {/* Status & Session Duration below the button */}
-        <div className="mt-4 h-5 flex items-center justify-center space-x-2 text-xs">
-          <SessionTimer connected={connected} />
+        <div className="mt-3 h-5 flex items-center justify-center space-x-2 text-xs">
+          {connected ? (
+            <SessionTimer connected={connected} connectedAt={connectedAt} isActive={isActive} />
+          ) : (
+            <>
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" />
+              <span className="font-semibold text-zinc-500 uppercase tracking-wider text-[11px]">
+                DISCONNECTED
+              </span>
+            </>
+          )}
         </div>
       </div>
 
-      {/* ACTIVE CONFIG SELECTOR */}
-      <div className="space-y-2">
+      {/* ACTIVE CONFIG OR UPSTREAM TARGET SELECTOR */}
+      {mode === 'upstream' ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-zinc-400 px-1">
+            <span>Upstream Proxy Target</span>
+            <button
+              onClick={() => onSelectTab('socks')}
+              className="text-zinc-300 hover:text-white text-[11px] font-medium flex items-center space-x-0.5 cursor-pointer"
+            >
+              <span>Configure</span>
+              <ChevronRight className="w-3 h-3" />
+            </button>
+          </div>
+
+          <div
+            onClick={() => onSelectTab('socks')}
+            className="modern-surface-interactive rounded-2xl p-3.5 flex items-center justify-between gap-2.5 cursor-pointer group"
+          >
+            <div className="flex items-center space-x-3 min-w-0 flex-1">
+              <div
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  connected
+                    ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.9)]'
+                    : upstreamProbe?.socksReady
+                    ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]'
+                    : 'bg-white/40'
+                }`}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center space-x-1.5 min-w-0">
+                  <span className="text-xs font-semibold text-white truncate">
+                    Upstream Proxy
+                  </span>
+                  <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-white/10 text-zinc-200 font-semibold border border-white/10 whitespace-nowrap shrink-0">
+                    SOCKS5
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-400 font-mono font-normal truncate mt-0.5">
+                  socks5://{cleanUpstreamHost}:{cleanUpstreamPort}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleTestUpstream}
+                disabled={testingUpstream}
+                title={upstreamProbe?.message || 'Test external SOCKS5 proxy availability'}
+                className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-lg border cursor-pointer select-none will-change-transform transition-transform duration-150 ${
+                  testingUpstream
+                    ? 'bg-white/20 text-white border-white/30'
+                    : upstreamProbe?.socksReady
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25 active:scale-95'
+                    : upstreamProbe && !upstreamProbe.socksReady
+                    ? 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25 active:scale-95'
+                    : 'bg-white/5 text-zinc-400 border-white/10 hover:text-white hover:bg-white/10 active:scale-95'
+                }`}
+              >
+                {testingUpstream
+                  ? '...'
+                  : upstreamProbe?.socksReady
+                  ? `${upstreamProbe.latencyMs}ms`
+                  : upstreamProbe
+                  ? 'ERR'
+                  : 'Test'}
+              </button>
+              <span className="text-[10px] px-2.5 py-1 rounded-xl bg-white/10 text-zinc-200 font-medium group-hover:bg-white/20 group-hover:text-white border border-white/10">
+                Edit
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
         <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-zinc-400 px-1">
           <span>Selected Config</span>
           <button
             onClick={() => onSelectTab('configs')}
-            className="text-zinc-300 hover:text-white text-[11px] font-medium flex items-center space-x-0.5 transition"
+            className="text-zinc-300 hover:text-white text-[11px] font-medium flex items-center space-x-0.5"
           >
             <span>All Nodes</span>
             <ChevronRight className="w-3 h-3" />
@@ -151,7 +360,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
 
         <div
           onClick={() => setShowQuickPicker(!showQuickPicker)}
-          className="modern-surface rounded-2xl p-3.5 flex items-center justify-between cursor-pointer transition group"
+          className="modern-surface-interactive rounded-2xl p-3.5 flex items-center justify-between cursor-pointer group"
         >
           <div className="flex items-center space-x-3 min-w-0">
             <div
@@ -186,9 +395,9 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                 }}
                 disabled={pingingMap?.[activeProfile.id]}
                 title="Click to test latency (Ping)"
-                className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-lg border transition cursor-pointer select-none ${
+                className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-lg border cursor-pointer select-none will-change-transform transition-transform duration-150 ${
                   pingingMap?.[activeProfile.id]
-                    ? 'bg-white/20 text-white animate-pulse border-white/30'
+                    ? 'bg-white/20 text-white border-white/30'
                     : activeProfile.ping > 0
                     ? 'bg-white/10 text-zinc-200 border-white/15 hover:bg-white/20 hover:text-white hover:border-white/30 active:scale-95'
                     : 'bg-white/5 text-zinc-400 border-white/10 hover:text-white hover:bg-white/10 active:scale-95'
@@ -201,7 +410,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                   : 'Ping'}
               </button>
             )}
-            <span className="text-[10px] px-2.5 py-1 rounded-xl bg-white/10 text-zinc-200 font-medium group-hover:bg-white/20 group-hover:text-white transition border border-white/10">
+            <span className="text-[10px] px-2.5 py-1 rounded-xl bg-white/10 text-zinc-200 font-medium group-hover:bg-white/20 group-hover:text-white border border-white/10">
               Switch
             </span>
           </div>
@@ -217,7 +426,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                 <div
                   key={p.id}
                   onClick={() => onSelectProfile(p.id)}
-                  className={`p-2.5 rounded-xl flex items-center justify-between text-xs cursor-pointer transition font-medium ${
+                  className={`contain-row p-2.5 rounded-xl flex items-center justify-between text-xs cursor-pointer font-medium ${
                     selectedProfileId === p.id
                       ? 'bg-white/[0.14] border border-white/20 text-white font-semibold shadow-sm'
                       : 'hover:bg-white/[0.08] text-white/80'
@@ -237,9 +446,9 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                     }}
                     disabled={pingingMap?.[p.id]}
                     title="Test ping"
-                    className={`text-[9px] font-mono px-1.5 py-0.5 rounded border transition shrink-0 ${
+                    className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${
                       pingingMap?.[p.id]
-                        ? 'bg-white/20 text-white animate-pulse border-white/30'
+                        ? 'bg-white/20 text-white border-white/30'
                         : p.ping > 0
                         ? 'bg-white/10 text-zinc-200 border-white/15 hover:bg-white/20 hover:text-white'
                         : 'bg-white/5 text-zinc-400 border-white/10 hover:text-white'
@@ -252,10 +461,13 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
             )}
           </div>
         )}
-      </div>
+        </div>
+      )}
 
       {/* DATA USAGE & SPEED COUNTERS */}
-      <LiveTrafficStats />
-    </motion.div>
+      <LiveTrafficStats isActive={isActive} mode={mode} connected={connected} />
+    </div>
   );
-};
+});
+
+ConnectTab.displayName = 'ConnectTab';
