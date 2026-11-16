@@ -21,7 +21,7 @@ import (
 var assets embed.FS
 
 // AppVersion is the version of the application, dynamic via ldflags during release build
-var AppVersion = "1.0.2"
+var AppVersion = "1.1.0"
 
 //go:embed build/appicon.png
 var appIcon []byte
