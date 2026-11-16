@@ -33,7 +33,7 @@ export const TitleBar: React.FC = () => {
             Window.Minimise();
           }}
           title="Minimize"
-          className="w-6 h-6 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+          className="w-6 h-6 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
@@ -44,7 +44,7 @@ export const TitleBar: React.FC = () => {
             Window.Hide();
           }}
           title="Close to Tray"
-          className="w-6 h-6 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-rose-500/20 hover:border hover:border-rose-500/30 transition-colors cursor-pointer"
+          className="w-6 h-6 rounded-md border border-transparent flex items-center justify-center text-zinc-400 hover:text-white hover:bg-rose-500/20 hover:border-rose-500/30 cursor-pointer"
         >
           <X className="w-3.5 h-3.5" />
         </button>

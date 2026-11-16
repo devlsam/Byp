@@ -100,7 +100,7 @@ export const ConfirmModal: React.FC = () => {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
           onClick={handleCancel}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-xl select-none"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 select-none"
         >
           <motion.div
             key="confirm-card"
@@ -109,15 +109,16 @@ export const ConfirmModal: React.FC = () => {
             exit={{ opacity: 0, scale: 0.92, y: 12 }}
             transition={{ type: 'spring', stiffness: 420, damping: 28 }}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-[340px] rounded-3xl p-5 bg-[#14151a]/95 border border-white/[0.14] shadow-[0_25px_65px_-12px_rgba(0,0,0,0.85)] relative overflow-hidden flex flex-col items-center text-center backdrop-blur-2xl"
+            className="w-full max-w-[340px] rounded-3xl p-5 bg-[#14151a] border border-white/[0.14] shadow-[0_25px_65px_-12px_rgba(0,0,0,0.85)] relative overflow-hidden flex flex-col items-center text-center"
           >
             {/* Top ambient highlight */}
             <div
-              className={`absolute -top-16 left-1/2 -translate-x-1/2 w-44 h-44 rounded-full blur-3xl pointer-events-none ${
-                dialog.isDestructive
-                  ? 'bg-rose-500/20'
-                  : 'bg-white/10'
-              }`}
+              className="absolute -top-16 left-1/2 -translate-x-1/2 w-44 h-44 rounded-full pointer-events-none"
+              style={{
+                background: dialog.isDestructive
+                  ? 'radial-gradient(circle, rgba(244,63,94,0.18) 0%, transparent 70%)'
+                  : 'radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%)',
+              }}
             />
 
             {/* Close Button top-right */}

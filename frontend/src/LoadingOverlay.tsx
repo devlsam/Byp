@@ -202,10 +202,13 @@ export function LoadingOverlay() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.3, ease: 'easeOut' }}
-          className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/60 backdrop-blur-2xl p-6 select-none"
+          className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/82 p-6 select-none"
         >
           {/* Subtle Ambient Radial Glow in the center */}
-          <div className="absolute w-80 h-80 rounded-full bg-white/[0.05] blur-3xl pointer-events-none -z-10" />
+          <div
+            className="absolute w-80 h-80 rounded-full pointer-events-none -z-10"
+            style={{ background: 'radial-gradient(circle, rgba(255,255,255,0.06) 0%, transparent 70%)' }}
+          />
 
           {/* Floating Content: Fullscreen seamless, NO box */}
           <motion.div
