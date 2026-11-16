@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
 import {
   ObjectUngroup,
   Trash2,
@@ -26,6 +25,7 @@ interface SplitTabProps {
   systemGateway: 'vpn' | 'direct';
   appRoutes: Record<string, 'vpn' | 'direct'>;
   mode: string;
+  isActive?: boolean;
   onSwitchToTun?: () => void;
   applyVisualRouting: (
     newSystemGateway: 'vpn' | 'direct',
@@ -38,14 +38,115 @@ interface SplitTabProps {
   onClearAllApps: () => void;
 }
 
+interface DragWireHandle {
+  start: (startX: number, startY: number) => void;
+  move: (x: number, y: number) => void;
+  stop: () => void;
+}
+
+/**
+ * Ref-driven SVG drag preview overlay so 120Hz mouse movement never triggers
+ * React reconciliation across the application list or canvas.
+ */
+const DragWireOverlay = React.memo(
+  forwardRef<DragWireHandle>((_, ref) => {
+    const groupRef = useRef<SVGGElement>(null);
+    const glowRef = useRef<SVGPathElement>(null);
+    const dashRef = useRef<SVGPathElement>(null);
+    const startRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+    const latestRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+    const rafRef = useRef<number | null>(null);
+
+    const flush = useCallback(() => {
+      rafRef.current = null;
+      const sx = startRef.current.x;
+      const sy = startRef.current.y;
+      const cx = latestRef.current.x;
+      const cy = latestRef.current.y;
+      const dx = Math.max(20, (cx - sx) * 0.5);
+      const d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${cx - dx} ${cy}, ${cx} ${cy}`;
+      glowRef.current?.setAttribute('d', d);
+      dashRef.current?.setAttribute('d', d);
+    }, []);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        start(x: number, y: number) {
+          startRef.current = { x, y };
+          latestRef.current = { x, y };
+          if (groupRef.current) groupRef.current.style.display = 'inline';
+          flush();
+        },
+        move(x: number, y: number) {
+          latestRef.current = { x, y };
+          if (rafRef.current === null) {
+            rafRef.current = requestAnimationFrame(flush);
+          }
+        },
+        stop() {
+          if (rafRef.current !== null) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+          }
+          if (groupRef.current) groupRef.current.style.display = 'none';
+        },
+      }),
+      [flush]
+    );
+
+    useEffect(() => {
+      return () => {
+        if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      };
+    }, []);
+
+    return (
+      <g ref={groupRef} style={{ display: 'none' }}>
+        <path
+          ref={glowRef}
+          d=""
+          fill="none"
+          stroke="rgba(255, 255, 255, 0.25)"
+          strokeWidth={4}
+          strokeLinecap="round"
+        />
+        <path
+          ref={dashRef}
+          d=""
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth={2}
+          strokeDasharray="3 3"
+          strokeLinecap="round"
+        />
+      </g>
+    );
+  })
+);
+DragWireOverlay.displayName = 'DragWireOverlay';
+
+const EMPTY_APPS: string[] = [];
+
+function areWirePathsEqual(a: WirePath[], b: WirePath[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].target !== b[i].target || a[i].pathD !== b[i].pathD) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Visual Flow Split Tunneling tab with interactive drag-and-drop routing and dynamic bezier wires.
  */
-export const SplitTab: React.FC<SplitTabProps> = ({
+export const SplitTab: React.FC<SplitTabProps> = React.memo(({
   settings,
   systemGateway,
   appRoutes,
   mode,
+  isActive = true,
   onSwitchToTun,
   applyVisualRouting,
   onSelectExe,
@@ -55,41 +156,67 @@ export const SplitTab: React.FC<SplitTabProps> = ({
 }) => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appsScrollRef = useRef<HTMLDivElement>(null);
+  const vpnDotRef = useRef<HTMLDivElement>(null);
+  const directDotRef = useRef<HTMLDivElement>(null);
+  const systemDotRef = useRef<HTMLDivElement>(null);
+  const appDotRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const dragOverlayRef = useRef<DragWireHandle>(null);
+  const isDraggingRef = useRef<boolean>(false);
+  const canvasRectCacheRef = useRef<DOMRect | null>(null);
+  const wireRafRef = useRef<number | null>(null);
+
   const [wirePaths, setWirePaths] = useState<WirePath[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  const [isDocVisible, setIsDocVisible] = useState<boolean>(() => typeof document !== 'undefined' ? !document.hidden : true);
 
-  useEffect(() => {
-    const handleVisibility = () => {
-      setIsDocVisible(!document.hidden);
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, []);
+  const configuredApps = settings.splitTunnelApps ?? EMPTY_APPS;
 
-  const [dragWire, setDragWire] = useState<{
-    active: boolean;
-    sourceId: string;
-    sourceType: 'system' | 'app';
-    startX: number;
-    startY: number;
-    currentX: number;
-    currentY: number;
-  } | null>(null);
+  const appItems = useMemo(
+    () =>
+      configuredApps.map((appPath) => ({
+        appPath,
+        visual: getAppVisual(appPath),
+        baseName: appPath.split(/[\\/]/).pop() || appPath,
+      })),
+    [configuredApps]
+  );
+
+  const presetAddedMap = useMemo(() => {
+    const lowerApps = configuredApps.map((a) => a.toLowerCase());
+    const map: Record<string, boolean> = {};
+    for (const p of POPULAR_PRESETS) {
+      const exeLower = p.exe.toLowerCase();
+      const nameLower = p.name.toLowerCase();
+      map[p.id] = lowerApps.some((a) => a.includes(exeLower) || a.includes(nameLower));
+    }
+    return map;
+  }, [configuredApps]);
 
   const updateWires = useCallback(() => {
-    if (!canvasRef.current) return;
-    const canvasRect = canvasRef.current.getBoundingClientRect();
-    if (canvasRect.width === 0 || canvasRect.height === 0) return;
+    const canvasEl = canvasRef.current;
+    const vpnDot = vpnDotRef.current;
+    const directDot = directDotRef.current;
+    if (!canvasEl || !vpnDot || !directDot) return;
 
-    const vpnDot = document.getElementById('dot-gateway-vpn');
-    const directDot = document.getElementById('dot-gateway-direct');
-    if (!vpnDot || !directDot) return;
+    // Batch all DOM geometry reads before computing SVG paths to avoid layout thrashing
+    const canvasRect = canvasEl.getBoundingClientRect();
+    if (canvasRect.width === 0 || canvasRect.height === 0) return;
 
     const vpnRect = vpnDot.getBoundingClientRect();
     const directRect = directDot.getBoundingClientRect();
+    const systemDot = systemDotRef.current;
+    const sysRect = systemDot ? systemDot.getBoundingClientRect() : null;
+    const scrollContainer = appsScrollRef.current;
+    const scrollRect = scrollContainer ? scrollContainer.getBoundingClientRect() : null;
+
+    const dotRects: Array<{ appPath: string; rect: DOMRect }> = [];
+    if (scrollRect) {
+      for (const appPath of configuredApps) {
+        const dot = appDotRefs.current.get(appPath);
+        if (dot) {
+          dotRects.push({ appPath, rect: dot.getBoundingClientRect() });
+        }
+      }
+    }
 
     const vpnCenter = {
       x: vpnRect.left + vpnRect.width / 2 - canvasRect.left,
@@ -104,34 +231,22 @@ export const SplitTab: React.FC<SplitTabProps> = ({
     const endpoints: WireEndpoint[] = [];
 
     // 1. My System Wire
-    const systemDot = document.getElementById('dot-source-system');
-    if (systemDot) {
-      const sysRect = systemDot.getBoundingClientRect();
-      if (sysRect.width > 0 && sysRect.height > 0) {
-        endpoints.push({
-          id: 'system',
-          target: systemGateway,
-          x1: sysRect.left + sysRect.width / 2 - canvasRect.left,
-          y1: sysRect.top + sysRect.height / 2 - canvasRect.top,
-        });
-      }
+    if (sysRect && sysRect.width > 0 && sysRect.height > 0) {
+      endpoints.push({
+        id: 'system',
+        target: systemGateway,
+        x1: sysRect.left + sysRect.width / 2 - canvasRect.left,
+        y1: sysRect.top + sysRect.height / 2 - canvasRect.top,
+      });
     }
 
     // 2. Configured Apps Wires (Only if visible within scroll viewport)
-    const scrollContainer = appsScrollRef.current;
-    const scrollRect = scrollContainer ? scrollContainer.getBoundingClientRect() : null;
-    const currentApps = settings.splitTunnelApps || [];
-
-    currentApps.forEach((appPath, idx) => {
-      const target = appRoutes[appPath] || (systemGateway === 'vpn' ? 'direct' : 'vpn');
-      const dot =
-        document.getElementById(`dot-app-${idx}`) ||
-        document.getElementById(`dot-source-${encodeURIComponent(appPath)}`);
-      if (dot && scrollRect) {
-        const dotRect = dot.getBoundingClientRect();
+    if (scrollRect) {
+      for (const { appPath, rect: dotRect } of dotRects) {
         const isVisible =
           dotRect.bottom >= scrollRect.top - 4 && dotRect.top <= scrollRect.bottom + 4;
         if (isVisible && dotRect.width > 0 && dotRect.height > 0) {
+          const target = appRoutes[appPath] || (systemGateway === 'vpn' ? 'direct' : 'vpn');
           endpoints.push({
             id: appPath,
             target,
@@ -140,7 +255,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
           });
         }
       }
-    });
+    }
 
     // Group endpoints by target to calculate smooth fan-out offsets along gateway dock
     const vpnEndpoints = endpoints.filter((e) => e.target === 'vpn');
@@ -174,22 +289,52 @@ export const SplitTab: React.FC<SplitTabProps> = ({
       ...computePaths(directEndpoints, directCenter, 'direct'),
     ];
 
-    setWirePaths(newPaths);
-  }, [systemGateway, appRoutes, settings.splitTunnelApps]);
+    setWirePaths((prev) => (areWirePathsEqual(prev, newPaths) ? prev : newPaths));
+  }, [systemGateway, appRoutes, configuredApps]);
 
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+
+  const updateWiresRef = useRef(updateWires);
+  updateWiresRef.current = updateWires;
+
+  const lastMeasuredFnRef = useRef<(() => void) | null>(null);
+
+  const scheduleWireUpdate = useCallback(() => {
+    if (!isActiveRef.current) return;
+    if (wireRafRef.current !== null) return;
+    wireRafRef.current = requestAnimationFrame(() => {
+      wireRafRef.current = null;
+      if (isActiveRef.current) {
+        updateWiresRef.current();
+      }
+    });
+  }, []);
+
+  // Recalculate wire positions when routes/apps change, when tab becomes visible, or once on idle pre-warm mount
   useEffect(() => {
-    updateWires();
-    const f1 = requestAnimationFrame(updateWires);
-    const t1 = setTimeout(updateWires, 60);
-    const t2 = setTimeout(updateWires, 180);
-    const t3 = setTimeout(updateWires, 350);
+    if (isActive) {
+      lastMeasuredFnRef.current = updateWires;
+      scheduleWireUpdate();
+    } else if (lastMeasuredFnRef.current !== updateWires) {
+      lastMeasuredFnRef.current = updateWires;
+      if (wireRafRef.current === null) {
+        wireRafRef.current = requestAnimationFrame(() => {
+          wireRafRef.current = null;
+          updateWiresRef.current();
+        });
+      }
+    }
+  }, [updateWires, scheduleWireUpdate, isActive]);
 
-    window.addEventListener('resize', updateWires);
+  // Attach resize / container observers once for the tab lifetime
+  useEffect(() => {
+    window.addEventListener('resize', scheduleWireUpdate);
 
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined' && canvasRef.current) {
       ro = new ResizeObserver(() => {
-        updateWires();
+        scheduleWireUpdate();
       });
       ro.observe(canvasRef.current);
       if (appsScrollRef.current) {
@@ -198,29 +343,45 @@ export const SplitTab: React.FC<SplitTabProps> = ({
     }
 
     return () => {
-      cancelAnimationFrame(f1);
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      window.removeEventListener('resize', updateWires);
+      window.removeEventListener('resize', scheduleWireUpdate);
       if (ro) ro.disconnect();
+      if (wireRafRef.current !== null) {
+        cancelAnimationFrame(wireRafRef.current);
+        wireRafRef.current = null;
+      }
     };
-  }, [updateWires, settings.splitTunnelApps]);
+  }, [scheduleWireUpdate]);
 
   const handleToggleSystem = () => {
     const next: 'vpn' | 'direct' = systemGateway === 'vpn' ? 'direct' : 'vpn';
-    applyVisualRouting(next, appRoutes, settings.splitTunnelApps || []);
+    applyVisualRouting(next, appRoutes, configuredApps);
   };
 
   const handleToggleApp = (appPath: string) => {
     const current = appRoutes[appPath] || (systemGateway === 'vpn' ? 'direct' : 'vpn');
     const next: 'vpn' | 'direct' = current === 'vpn' ? 'direct' : 'vpn';
     const updated = { ...appRoutes, [appPath]: next };
-    applyVisualRouting(systemGateway, updated, settings.splitTunnelApps || []);
+    applyVisualRouting(systemGateway, updated, configuredApps);
   };
 
+  const handleDragMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDraggingRef.current || !canvasRectCacheRef.current) return;
+    const rect = canvasRectCacheRef.current;
+    dragOverlayRef.current?.move(e.clientX - rect.left, e.clientY - rect.top);
+  }, []);
+
+  const handleCanvasMouseUp = useCallback(() => {
+    if (isDraggingRef.current) {
+      isDraggingRef.current = false;
+      canvasRectCacheRef.current = null;
+      dragOverlayRef.current?.stop();
+      window.removeEventListener('mousemove', handleDragMouseMove);
+    }
+    setSelectedSourceId(null);
+  }, [handleDragMouseMove]);
+
   const handleStartDrag = (
-    sourceType: 'system' | 'app',
+    _sourceType: 'system' | 'app',
     sourceId: string,
     e: React.MouseEvent
   ) => {
@@ -228,57 +389,39 @@ export const SplitTab: React.FC<SplitTabProps> = ({
     e.stopPropagation();
     if (!canvasRef.current) return;
     const canvasRect = canvasRef.current.getBoundingClientRect();
+    canvasRectCacheRef.current = canvasRect;
+    isDraggingRef.current = true;
     const startX = e.clientX - canvasRect.left;
     const startY = e.clientY - canvasRect.top;
 
+    window.addEventListener('mousemove', handleDragMouseMove, { passive: true });
     setSelectedSourceId(sourceId);
-    setDragWire({
-      active: true,
-      sourceId,
-      sourceType,
-      startX,
-      startY,
-      currentX: startX,
-      currentY: startY,
-    });
+    dragOverlayRef.current?.start(startX, startY);
   };
 
-  const handleCanvasMouseMove = (e: React.MouseEvent) => {
-    if (!dragWire || !dragWire.active || !canvasRef.current) return;
-    const canvasRect = canvasRef.current.getBoundingClientRect();
-    setDragWire((prev) =>
-      prev
-        ? {
-            ...prev,
-            currentX: e.clientX - canvasRect.left,
-            currentY: e.clientY - canvasRect.top,
-          }
-        : null
-    );
-  };
-
-  const handleCanvasMouseUp = () => {
-    if (dragWire) {
-      setDragWire(null);
-    }
-  };
+  useEffect(() => {
+    window.addEventListener('mouseup', handleCanvasMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleCanvasMouseUp);
+      window.removeEventListener('mousemove', handleDragMouseMove);
+    };
+  }, [handleCanvasMouseUp, handleDragMouseMove]);
 
   const handleConnectToGateway = (target: 'vpn' | 'direct') => {
     if (!selectedSourceId) return;
     if (selectedSourceId === 'system') {
-      applyVisualRouting(target, appRoutes, settings.splitTunnelApps || []);
+      applyVisualRouting(target, appRoutes, configuredApps);
     } else {
       const updated = { ...appRoutes, [selectedSourceId]: target };
-      applyVisualRouting(systemGateway, updated, settings.splitTunnelApps || []);
+      applyVisualRouting(systemGateway, updated, configuredApps);
     }
     setSelectedSourceId(null);
-    setDragWire(null);
+    handleCanvasMouseUp();
   };
 
   const handleRemoveApp = async (appToRemove: string) => {
     try {
-      const currentApps = settings.splitTunnelApps || [];
-      const updatedApps = currentApps.filter((a) => a !== appToRemove);
+      const updatedApps = configuredApps.filter((a) => a !== appToRemove);
       const updatedRoutes = { ...appRoutes };
       delete updatedRoutes[appToRemove];
       if (selectedSourceId === appToRemove) {
@@ -290,16 +433,10 @@ export const SplitTab: React.FC<SplitTabProps> = ({
     }
   };
 
+  const isTunMode = mode === 'tun' || mode === 'upstream';
+
   return (
-    <motion.div
-      key="split"
-      initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
-      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-      exit={{ opacity: 0, y: -8, filter: 'blur(4px)' }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-      onAnimationComplete={() => updateWires()}
-      className="flex-1 min-h-0 flex flex-col p-3.5 space-y-2 overflow-hidden"
-    >
+    <div className="flex-1 min-h-0 flex flex-col p-3.5 space-y-2 overflow-hidden">
       {/* Split Tunnel Header */}
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-2">
@@ -310,9 +447,9 @@ export const SplitTab: React.FC<SplitTabProps> = ({
           {settings.splitTunnelApps && settings.splitTunnelApps.length > 0 && (
             <button
               type="button"
-              disabled={mode !== 'tun'}
+              disabled={!isTunMode}
               onClick={onClearAllApps}
-              className="text-[10px] text-zinc-400 hover:text-rose-400 transition cursor-pointer flex items-center space-x-1 disabled:opacity-30 disabled:pointer-events-none"
+              className="text-[10px] text-zinc-400 hover:text-rose-400 cursor-pointer flex items-center space-x-1 disabled:opacity-30 disabled:pointer-events-none"
               title="Clear all configured applications"
             >
               <Trash2 className="w-2.5 h-2.5" />
@@ -326,7 +463,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
       </div>
 
       {/* TUN Mode Constraint Alert */}
-      {mode !== 'tun' && (
+      {!isTunMode && (
         <div className="p-3 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-between shadow-lg shrink-0">
           <div className="flex items-center space-x-2.5">
             <div className="w-8 h-8 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0">
@@ -340,7 +477,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
                 </span>
               </div>
               <p className="text-[10px] text-zinc-400 mt-0.5">
-                Split tunneling routing is exclusively active in TUN mode.
+                Split tunneling routing is active in TUN and UPSTREAM modes.
               </p>
             </div>
           </div>
@@ -348,7 +485,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
             <button
               type="button"
               onClick={onSwitchToTun}
-              className="px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-200 text-black text-xs font-semibold transition active:scale-95 shadow-sm flex items-center space-x-1 shrink-0 cursor-pointer"
+              className="px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-200 text-black text-xs font-semibold will-change-transform transition-transform duration-150 active:scale-95 shadow-sm flex items-center space-x-1 shrink-0 cursor-pointer"
             >
               <Zap className="w-3 h-3 text-black fill-current" />
               <span>Switch to TUN</span>
@@ -359,8 +496,8 @@ export const SplitTab: React.FC<SplitTabProps> = ({
 
       {/* Main interactive area: dimmed and disabled when not in TUN mode */}
       <div
-        className={`flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden transition-all duration-200 relative ${
-          mode !== 'tun' ? 'opacity-40 pointer-events-none select-none filter blur-[0.4px]' : ''
+        className={`flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden transition-opacity duration-200 relative ${
+          !isTunMode ? 'opacity-40 pointer-events-none select-none' : ''
         }`}
       >
         {/* Sleek, Compact Action Bar */}
@@ -371,7 +508,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
             type="button"
             onClick={onSelectExe}
             title="Browse and add .exe file from disk"
-            className="px-2.5 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 hover:text-white border border-white/10 text-[10px] font-medium transition flex items-center justify-center space-x-1.5 cursor-pointer shadow-sm active:scale-[0.98]"
+            className="px-2.5 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 hover:text-white border border-white/10 text-[10px] font-medium flex items-center justify-center space-x-1.5 cursor-pointer shadow-sm will-change-transform transition-transform duration-150 active:scale-[0.98]"
           >
             <FolderOpen className="w-3.5 h-3.5 text-zinc-300" />
             <span className="whitespace-nowrap">+ Add .exe</span>
@@ -380,7 +517,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
             type="button"
             onClick={onOpenRunningApps}
             title="Pick from currently running applications"
-            className="px-2.5 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 hover:text-white border border-white/10 text-[10px] font-medium transition flex items-center justify-center space-x-1.5 cursor-pointer shadow-sm active:scale-[0.98]"
+            className="px-2.5 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 hover:text-white border border-white/10 text-[10px] font-medium flex items-center justify-center space-x-1.5 cursor-pointer shadow-sm will-change-transform transition-transform duration-150 active:scale-[0.98]"
           >
             <Cpu className="w-3.5 h-3.5 text-zinc-300" />
             <span className="whitespace-nowrap">+ Running Apps</span>
@@ -391,21 +528,17 @@ export const SplitTab: React.FC<SplitTabProps> = ({
         <div className="grid grid-cols-4 gap-1.5">
           {POPULAR_PRESETS.map((p) => {
             const Icon = p.icon;
-            const isAdded = (settings.splitTunnelApps || []).some(
-              (a) =>
-                a.toLowerCase().includes(p.exe.toLowerCase()) ||
-                a.toLowerCase().includes(p.name.toLowerCase())
-            );
+            const isAdded = Boolean(presetAddedMap[p.id]);
             return (
               <button
                 key={p.id}
                 type="button"
                 disabled={isAdded}
                 onClick={() => onAddPreset(p)}
-                className={`py-1.5 px-1 rounded-lg border text-[9.5px] font-medium transition flex items-center justify-center space-x-1 ${
+                className={`py-1.5 px-1 rounded-lg border text-[9.5px] font-medium flex items-center justify-center space-x-1 ${
                   isAdded
                     ? 'bg-white/[0.02] border-white/5 text-zinc-600 cursor-default opacity-40'
-                    : 'bg-white/[0.04] hover:bg-white/[0.09] border-white/10 text-zinc-300 hover:text-white cursor-pointer active:scale-95'
+                    : 'bg-white/[0.04] hover:bg-white/[0.09] border-white/10 text-zinc-300 hover:text-white cursor-pointer will-change-transform transition-transform duration-150 active:scale-95'
                 }`}
                 title={isAdded ? `${p.name} added` : `Add ${p.name}`}
               >
@@ -421,84 +554,51 @@ export const SplitTab: React.FC<SplitTabProps> = ({
       {/* Visual Flow Canvas */}
       <div
         ref={canvasRef}
-        onMouseMove={handleCanvasMouseMove}
         onMouseUp={handleCanvasMouseUp}
         className="canvas-dotted-grid rounded-2xl border border-white/10 flex-1 min-h-0 relative overflow-hidden flex select-none"
         style={{ touchAction: 'none' }}
       >
-        {/* SVG Curved Bezier Connecting Wires Overlay */}
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
-          <defs>
-            <clipPath id="canvas-clip">
-              <rect x="0" y="0" width="100%" height="100%" rx="16" />
-            </clipPath>
-            <filter id="glow-white" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor="#ffffff" floodOpacity="0.6" />
-            </filter>
-            <filter id="glow-zinc" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#a1a1aa" floodOpacity="0.35" />
-            </filter>
-          </defs>
-
-          <g clipPath="url(#canvas-clip)">
-            {/* Animated bezier curves between source nodes and target gateways */}
+        {/* SVG Curved Bezier Connecting Wires Overlay (no SVG filters, no clipPath, zero idle loop) */}
+        <svg
+          className="absolute inset-0 w-full h-full pointer-events-none z-0"
+          style={{ contain: 'strict' }}
+        >
+          <g>
             {wirePaths.map(({ id, target, pathD }) => {
               const isSelected = selectedSourceId === id;
               const isVpn = target === 'vpn';
               const strokeColor = isVpn ? '#ffffff' : '#a1a1aa';
-              const glowFilter = isVpn ? 'url(#glow-white)' : 'url(#glow-zinc)';
-              const bgStroke = isVpn ? 'rgba(255, 255, 255, 0.22)' : 'rgba(161, 161, 170, 0.12)';
+              const bgStroke = isVpn
+                ? isSelected
+                  ? 'rgba(255, 255, 255, 0.34)'
+                  : 'rgba(255, 255, 255, 0.16)'
+                : 'rgba(161, 161, 170, 0.1)';
 
               return (
                 <g key={id}>
-                  {/* Background thicker glow path */}
+                  {/* Soft aura stroke replacing SVG feDropShadow rasterization */}
                   <path
                     d={pathD}
                     fill="none"
                     stroke={bgStroke}
-                    strokeWidth={isSelected ? 5 : 3.5}
+                    strokeWidth={isSelected ? 5.5 : 4}
                     strokeLinecap="round"
-                    filter={glowFilter}
                   />
-                  {/* Foreground flowing animated dashed line (no filter to eliminate GPU repaint loop) */}
+                  {/* Crisp dashed routing line */}
                   <path
                     d={pathD}
                     fill="none"
                     stroke={strokeColor}
-                    strokeWidth={isSelected ? 2.4 : 1.8}
-                    className={`wire-animated ${!isDocVisible ? 'wire-paused' : ''}`}
+                    strokeWidth={isSelected ? 2.4 : 1.7}
+                    className="wire-stroke"
                     strokeLinecap="round"
                   />
                 </g>
               );
             })}
 
-            {/* Active Interactive Dragging Wire */}
-            {dragWire &&
-              dragWire.active &&
-              (() => {
-                const dx = Math.max(20, (dragWire.currentX - dragWire.startX) * 0.5);
-                const dragD = `M ${dragWire.startX} ${dragWire.startY} C ${dragWire.startX + dx} ${dragWire.startY}, ${dragWire.currentX - dx} ${dragWire.currentY}, ${dragWire.currentX} ${dragWire.currentY}`;
-                return (
-                  <g>
-                    <path
-                      d={dragD}
-                      fill="none"
-                      stroke="rgba(255, 255, 255, 0.25)"
-                      strokeWidth={4}
-                      strokeLinecap="round"
-                    />
-                    <path
-                      d={dragD}
-                      fill="none"
-                      stroke="#ffffff"
-                      strokeWidth={2}
-                      strokeDasharray="3 3"
-                      strokeLinecap="round"
-                    />
-                  </g>
-                );
-              })()}
+            {/* Ref-driven interactive dragging wire (zero React re-renders on mousemove) */}
+            <DragWireOverlay ref={dragOverlayRef} />
           </g>
         </svg>
 
@@ -508,11 +608,13 @@ export const SplitTab: React.FC<SplitTabProps> = ({
           <div
             onClick={handleToggleSystem}
             onMouseDown={(e) => handleStartDrag('system', 'system', e)}
-            className={`h-[48px] mr-4 p-2 rounded-xl transition-all relative group cursor-pointer shrink-0 border flex items-center justify-between ${
-              systemGateway === 'vpn'
+            className={`contain-row h-[48px] mr-4 p-2 rounded-xl relative group cursor-pointer shrink-0 border flex items-center justify-between ${
+              selectedSourceId === 'system'
+                ? 'bg-white/[0.12] border-white/75 shadow-[0_0_14px_rgba(255,255,255,0.16)]'
+                : systemGateway === 'vpn'
                 ? 'bg-white/[0.08] border-white/30 shadow-[0_0_12px_rgba(255,255,255,0.06)]'
                 : 'bg-white/[0.03] border-white/10 hover:border-white/20'
-            } ${selectedSourceId === 'system' ? 'ring-2 ring-white/60' : ''}`}
+            }`}
             title="Click card to toggle route between VPN & Direct"
           >
             <div className="flex items-center space-x-2 min-w-0 flex-1 pr-1.5">
@@ -545,26 +647,27 @@ export const SplitTab: React.FC<SplitTabProps> = ({
 
             {/* Right Connection Socket */}
             <div
+              ref={systemDotRef}
               id="dot-source-system"
-              className={`absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-[#0b0c10] transition shadow-md ${
+              className={`absolute -right-1.5 top-1/2 -translate-y-1/2 z-10 w-3 h-3 rounded-full border-2 border-[#0b0c10] shadow-md ${
                 systemGateway === 'vpn' ? 'bg-white ring-2 ring-white/50' : 'bg-zinc-500 ring-2 ring-white/20'
               }`}
             />
           </div>
 
           {/* Section Divider */}
-          <div className="flex items-center justify-between px-1 mr-4 py-1.5 shrink-0 text-zinc-500">
+          <div className="flex items-center justify-between px-1 mr-4 pt-1.5 pb-0.5 shrink-0 text-zinc-500">
             <span className="text-[9px] font-semibold uppercase tracking-wider">Configured Apps</span>
-            <span className="text-[9px] font-mono">{settings.splitTunnelApps?.length || 0}</span>
+            <span className="text-[9px] font-mono">{configuredApps.length}</span>
           </div>
 
           {/* Scrollable Configured App Nodes */}
           <div
             ref={appsScrollRef}
-            onScroll={updateWires}
-            className="flex-1 min-h-0 overflow-y-auto no-scrollbar space-y-1.5"
+            onScroll={scheduleWireUpdate}
+            className="flex-1 min-h-0 overflow-y-auto no-scrollbar space-y-1.5 py-1 px-1 -mx-1"
           >
-            {!settings.splitTunnelApps || settings.splitTunnelApps.length === 0 ? (
+            {appItems.length === 0 ? (
               <div className="h-full min-h-[140px] mr-4 flex flex-col items-center justify-center text-center p-3 rounded-xl bg-black/20 border border-white/5 space-y-1 text-zinc-500">
                 <Layers className="w-5 h-5 text-zinc-600 mb-0.5" />
                 <span className="text-[10px] font-medium text-zinc-400">No custom apps</span>
@@ -573,9 +676,7 @@ export const SplitTab: React.FC<SplitTabProps> = ({
                 </span>
               </div>
             ) : (
-              settings.splitTunnelApps.map((appPath, idx) => {
-                const visual = getAppVisual(appPath);
-                const baseName = appPath.split(/[\\/]/).pop() || appPath;
+              appItems.map(({ appPath, visual, baseName }, idx) => {
                 const currentRoute = appRoutes[appPath] || (systemGateway === 'vpn' ? 'direct' : 'vpn');
                 const isVpn = currentRoute === 'vpn';
                 const isSelected = selectedSourceId === appPath;
@@ -585,11 +686,13 @@ export const SplitTab: React.FC<SplitTabProps> = ({
                     key={appPath}
                     onClick={() => handleToggleApp(appPath)}
                     onMouseDown={(e) => handleStartDrag('app', appPath, e)}
-                    className={`h-[46px] mr-4 rounded-xl transition-all relative group cursor-pointer border flex items-center justify-between px-2 ${
-                      isVpn
+                    className={`contain-row h-[46px] mr-4 rounded-xl relative group cursor-pointer border flex items-center justify-between px-2 ${
+                      isSelected
+                        ? 'bg-white/[0.12] border-white/75 shadow-[0_0_12px_rgba(255,255,255,0.16)] text-white'
+                        : isVpn
                         ? 'bg-white/[0.08] border-white/25 hover:border-white/40 text-white'
                         : 'bg-white/[0.03] border-white/10 hover:border-white/20 text-zinc-300'
-                    } ${isSelected ? 'ring-2 ring-white/60' : ''}`}
+                    }`}
                     title="Click card to toggle between VPN & Direct"
                   >
                     {/* Left: Icon + Text */}
@@ -633,11 +736,12 @@ export const SplitTab: React.FC<SplitTabProps> = ({
 
                       <button
                         type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRemoveApp(appPath);
                         }}
-                        className="w-5 h-5 rounded-md flex items-center justify-center text-zinc-500 hover:text-white hover:bg-rose-500/20 transition cursor-pointer"
+                        className="w-5 h-5 rounded-md flex items-center justify-center text-zinc-500 hover:text-white hover:bg-rose-500/20 cursor-pointer"
                         title="Remove application rule"
                       >
                         <Trash2 className="w-2.5 h-2.5" />
@@ -646,9 +750,13 @@ export const SplitTab: React.FC<SplitTabProps> = ({
 
                     {/* Right Connection Socket */}
                     <div
+                      ref={(el) => {
+                        if (el) appDotRefs.current.set(appPath, el);
+                        else appDotRefs.current.delete(appPath);
+                      }}
                       id={`dot-app-${idx}`}
                       data-app-path={appPath}
-                      className={`absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-[#0b0c10] transition shadow-md ${
+                      className={`absolute -right-1.5 top-1/2 -translate-y-1/2 z-10 w-3 h-3 rounded-full border-2 border-[#0b0c10] shadow-md ${
                         isVpn ? 'bg-white ring-2 ring-white/50' : 'bg-zinc-500 ring-2 ring-white/20'
                       }`}
                     />
@@ -669,13 +777,14 @@ export const SplitTab: React.FC<SplitTabProps> = ({
             id="node-gateway-vpn"
             onClick={() => handleConnectToGateway('vpn')}
             onMouseUp={() => handleConnectToGateway('vpn')}
-            className="p-2 rounded-2xl border transition-all cursor-pointer relative bg-white/[0.07] hover:bg-white/[0.12] border-white/25 hover:border-white/45 shadow-[0_0_20px_rgba(255,255,255,0.08)] flex flex-col items-center text-center space-y-1 group active:scale-[0.98]"
+            className="p-2 rounded-2xl border cursor-pointer relative bg-white/[0.07] hover:bg-white/[0.12] border-white/25 hover:border-white/45 shadow-[0_0_20px_rgba(255,255,255,0.08)] flex flex-col items-center text-center space-y-1 group will-change-transform transition-transform duration-150 active:scale-[0.98]"
             title="Click to route selected traffic to VPN Tunnel"
           >
             {/* Left Connection Dock Socket */}
             <div
+              ref={vpnDotRef}
               id="dot-gateway-vpn"
-              className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-8 rounded-full border-2 border-[#0b0c10] bg-white ring-2 ring-white/50 shadow-md group-hover:scale-110 transition"
+              className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-8 rounded-full border-2 border-[#0b0c10] bg-white ring-2 ring-white/50 shadow-md group-hover:scale-110"
             />
 
             <div className="w-7 h-7 rounded-xl bg-white/15 border border-white/30 text-white flex items-center justify-center shadow-inner">
@@ -692,13 +801,14 @@ export const SplitTab: React.FC<SplitTabProps> = ({
             id="node-gateway-direct"
             onClick={() => handleConnectToGateway('direct')}
             onMouseUp={() => handleConnectToGateway('direct')}
-            className="p-2 rounded-2xl border transition-all cursor-pointer relative bg-white/[0.03] hover:bg-white/[0.07] border-white/10 hover:border-white/25 shadow-sm flex flex-col items-center text-center space-y-1 group active:scale-[0.98]"
+            className="p-2 rounded-2xl border cursor-pointer relative bg-white/[0.03] hover:bg-white/[0.07] border-white/10 hover:border-white/25 shadow-sm flex flex-col items-center text-center space-y-1 group will-change-transform transition-transform duration-150 active:scale-[0.98]"
             title="Click to route selected traffic directly to Internet"
           >
             {/* Left Connection Dock Socket */}
             <div
+              ref={directDotRef}
               id="dot-gateway-direct"
-              className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-8 rounded-full border-2 border-[#0b0c10] bg-zinc-500 ring-2 ring-white/20 shadow-md group-hover:scale-110 transition"
+              className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-8 rounded-full border-2 border-[#0b0c10] bg-zinc-500 ring-2 ring-white/20 shadow-md group-hover:scale-110"
             />
 
             <div className="w-7 h-7 rounded-xl bg-white/5 border border-white/10 text-zinc-400 flex items-center justify-center shadow-inner">
@@ -712,6 +822,8 @@ export const SplitTab: React.FC<SplitTabProps> = ({
         </div>
       </div>
     </div>
-    </motion.div>
+    </div>
   );
-};
+});
+
+SplitTab.displayName = 'SplitTab';
