@@ -4,13 +4,36 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"changeme/internal/core"
 	"changeme/internal/storage"
 	"changeme/internal/sysproxy"
 	"changeme/internal/sysutil"
+	"changeme/internal/tun"
 )
+
+func isTunMode(mode string) bool {
+	return mode == "tun" || mode == "upstream"
+}
+
+func normalizedUpstream(s storage.Settings) (string, int) {
+	host := strings.TrimSpace(s.UpstreamHost)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := s.UpstreamPort
+	if port <= 0 || port > 65535 {
+		port = 10808
+	}
+	return host, port
+}
+
+// TestUpstreamProxy checks reachability and SOCKS5 readiness for an external upstream proxy target.
+func (a *AppService) TestUpstreamProxy(host string, port int) tun.UpstreamTestResult {
+	return tun.TestUpstreamProxy(host, port)
+}
 
 // resolveServerIPv4 resolves a server hostname or IP to an IPv4 string.
 func resolveServerIPv4(host string) string {
@@ -57,15 +80,10 @@ func (a *AppService) buildProfileConfig(profile *storage.Profile, bindIP string)
 	})
 }
 
-// Connect connects to the designated profile using the specified operating mode (tun, proxy, or core).
+// Connect connects to the designated profile or external upstream proxy using the specified mode ("tun", "upstream", "proxy", or "core").
 func (a *AppService) Connect(profileID string, mode string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	profile := a.store.GetProfile(profileID)
-	if profile == nil {
-		return fmt.Errorf("profile not found: %s", profileID)
-	}
 
 	settings := a.store.GetSettings()
 	if mode == "" {
@@ -75,54 +93,92 @@ func (a *AppService) Connect(profileID string, mode string) error {
 		mode = "proxy"
 	}
 
-	a.log("Generating Xray configuration for profile '%s' (%s)", profile.Name, profile.Protocol)
-
-	var bindIP string
-	if mode == "tun" {
-		if adapterInfo, err := a.tunMgr.GetPhysicalAdapterInfo(); err == nil && adapterInfo.LanIP != nil && !adapterInfo.LanIP.IsUnspecified() {
-			bindIP = adapterInfo.LanIP.String()
-			a.log("Binding Xray outbounds to physical adapter IP: %s", bindIP)
+	var profile *storage.Profile
+	if mode != "upstream" {
+		profile = a.store.GetProfile(profileID)
+		if profile == nil {
+			return fmt.Errorf("profile not found: %s", profileID)
 		}
 	}
 
-	fullConfig, err := a.buildProfileConfig(profile, bindIP)
-	if err != nil {
-		a.log("Configuration build error: %v", err)
-		return fmt.Errorf("failed to build configuration: %w", err)
-	}
+	if mode == "upstream" {
+		upHost, upPort := normalizedUpstream(settings)
+		a.log("Checking upstream SOCKS5 proxy at %s:%d...", upHost, upPort)
+		probe := tun.TestUpstreamProxy(upHost, upPort)
+		if !probe.Reachable || !probe.SocksReady {
+			a.log("Upstream proxy check failed (%s:%d): %s", upHost, upPort, probe.Message)
+			return fmt.Errorf("upstream proxy %s:%d unreachable: %s", upHost, upPort, probe.Message)
+		}
+		a.log("Upstream SOCKS5 verified (%s:%d, %d ms). Activating TUN service...", probe.ResolvedIP, upPort, probe.LatencyMs)
 
-	a.log("Starting embedded Xray instance via libxray...")
-	if err := a.xrayMgr.Start(fullConfig); err != nil {
-		a.log("Failed to start Xray: %v", err)
-		return err
-	}
-	a.log("Xray core running on 127.0.0.1:%d (SOCKS) & 127.0.0.1:%d (HTTP)", settings.SocksPort, settings.HttpPort)
+		_ = sysproxy.ClearProxy()
+		_ = a.tunMgr.Stop()
+		_ = a.xrayMgr.Stop()
 
-	switch mode {
-	case "proxy":
-		a.log("Setting Windows System Proxy to 127.0.0.1:%d...", settings.HttpPort)
-		if err := sysproxy.SetProxy(settings.HttpPort); err != nil {
-			a.log("Warning: Failed to set system proxy: %v", err)
-			_ = a.xrayMgr.Stop()
+		opts := tunOptionsFromSettings(settings)
+		a.tunMgr.SetZeltunOptions(opts)
+		a.log("Activating Upstream TUN Mode [%s, MTU=%d -> %s:%d] with DNS (%s / %s)...",
+			opts.Engine, opts.MTU, probe.ResolvedIP, upPort, settings.PrimaryDNS, settings.SecondaryDNS)
+		splitApps := effectiveSplitDriverApps(settings)
+		if err := a.tunMgr.StartWithUpstream("", probe.ResolvedIP, upPort, settings.SplitTunnelMode, splitApps, settings.PrimaryDNS, settings.SecondaryDNS); err != nil {
+			a.log("Failed to activate Upstream TUN mode: %v", err)
+			return fmt.Errorf("upstream TUN mode failed (run as Administrator): %w", err)
+		}
+		a.log("Windows Upstream TUN Mode activated cleanly")
+		profileID = ""
+	} else {
+		a.log("Generating Xray configuration for profile '%s' (%s)", profile.Name, profile.Protocol)
+
+		var bindIP string
+		if mode == "tun" {
+			if adapterInfo, err := a.tunMgr.GetPhysicalAdapterInfo(); err == nil && adapterInfo.LanIP != nil && !adapterInfo.LanIP.IsUnspecified() {
+				bindIP = adapterInfo.LanIP.String()
+				a.log("Binding Xray outbounds to physical adapter IP: %s", bindIP)
+			}
+		}
+
+		fullConfig, err := a.buildProfileConfig(profile, bindIP)
+		if err != nil {
+			a.log("Configuration build error: %v", err)
+			return fmt.Errorf("failed to build configuration: %w", err)
+		}
+
+		a.log("Starting embedded Xray instance via libxray...")
+		if err := a.xrayMgr.Start(fullConfig); err != nil {
+			a.log("Failed to start Xray: %v", err)
 			return err
 		}
-		a.log("Windows System Proxy activated successfully")
+		a.log("Xray core running on 127.0.0.1:%d (SOCKS) & 127.0.0.1:%d (HTTP)", settings.SocksPort, settings.HttpPort)
 
-	case "tun":
-		a.log("Activating Windows TUN Mode with DNS (%s / %s)...", settings.PrimaryDNS, settings.SecondaryDNS)
-		splitApps := settings.SplitDriverApps
-		if len(splitApps) == 0 && settings.SplitTunnelMode != "all" {
-			splitApps = settings.SplitTunnelApps
-		}
-		if err := a.tunMgr.Start(profile.Server, settings.SocksPort, settings.SplitTunnelMode, splitApps, settings.PrimaryDNS, settings.SecondaryDNS); err != nil {
-			a.log("Failed to activate TUN mode: %v", err)
-			_ = a.xrayMgr.Stop()
-			return fmt.Errorf("TUN mode failed (run as Administrator): %w", err)
-		}
-		a.log("Windows TUN Mode activated successfully")
+		switch mode {
+		case "proxy":
+			_ = a.tunMgr.Stop()
+			a.log("Setting Windows System Proxy to 127.0.0.1:%d...", settings.HttpPort)
+			if err := sysproxy.SetProxy(settings.HttpPort); err != nil {
+				a.log("Warning: Failed to set system proxy: %v", err)
+				_ = a.xrayMgr.Stop()
+				return err
+			}
+			a.log("Windows System Proxy activated successfully")
 
-	case "core":
-		a.log("Core Only mode active: SOCKS5 127.0.0.1:%d, HTTP 127.0.0.1:%d", settings.SocksPort, settings.HttpPort)
+		case "tun":
+			_ = sysproxy.ClearProxy()
+			opts := tunOptionsFromSettings(settings)
+			a.tunMgr.SetZeltunOptions(opts)
+			a.log("Activating Windows TUN Mode [%s, MTU=%d] with DNS (%s / %s)...", opts.Engine, opts.MTU, settings.PrimaryDNS, settings.SecondaryDNS)
+			splitApps := effectiveSplitDriverApps(settings)
+			if err := a.tunMgr.StartWithUpstream(profile.Server, "127.0.0.1", settings.SocksPort, settings.SplitTunnelMode, splitApps, settings.PrimaryDNS, settings.SecondaryDNS); err != nil {
+				a.log("Failed to activate TUN mode: %v", err)
+				_ = a.xrayMgr.Stop()
+				return fmt.Errorf("TUN mode failed (run as Administrator): %w", err)
+			}
+			a.log("Windows TUN Mode activated successfully")
+
+		case "core":
+			_ = sysproxy.ClearProxy()
+			_ = a.tunMgr.Stop()
+			a.log("Core Only mode active: SOCKS5 127.0.0.1:%d, HTTP 127.0.0.1:%d", settings.SocksPort, settings.HttpPort)
+		}
 	}
 
 	a.connected = true
@@ -133,12 +189,14 @@ func (a *AppService) Connect(profileID string, mode string) error {
 		a.watchCancel()
 		a.watchCancel = nil
 	}
-	if mode == "tun" {
+	if isTunMode(mode) {
 		a.watchCtx, a.watchCancel = context.WithCancel(context.Background())
 		go a.startNetworkWatcher(a.watchCtx, profileID)
 	}
 
-	settings.SelectedProfileID = profileID
+	if profileID != "" {
+		settings.SelectedProfileID = profileID
+	}
 	settings.Mode = mode
 	_ = a.store.UpdateSettings(settings)
 
@@ -150,17 +208,19 @@ func (a *AppService) Connect(profileID string, mode string) error {
 		})
 	}
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		ping := a.xrayMgr.MeasureServerPing(profile.Server, profile.Port, "http://cp.cloudflare.com/generate_204", settings.SocksPort)
-		if ping > 0 {
-			_ = a.store.UpdateProfilePing(profileID, ping, true)
-			a.log("Connection latency: %d ms", ping)
-			if a.app != nil {
-				a.app.Event.Emit("profile:ping", PingEvent{ID: profileID, Ping: ping})
+	if mode != "upstream" && profile != nil {
+		go func() {
+			time.Sleep(1 * time.Second)
+			ping := a.xrayMgr.MeasureServerPing(profile.Server, profile.Port, "http://cp.cloudflare.com/generate_204", settings.SocksPort)
+			if ping > 0 {
+				_ = a.store.UpdateProfilePing(profileID, ping, true)
+				a.log("Connection latency: %d ms", ping)
+				if a.app != nil {
+					a.app.Event.Emit("profile:ping", PingEvent{ID: profileID, Ping: ping})
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	return nil
 }
@@ -196,9 +256,10 @@ func (a *AppService) Disconnect() error {
 			ActiveMode:      a.activeMode,
 		})
 		a.app.Event.Emit("traffic:update", core.TrafficStats{})
+		a.app.Event.Emit("tun:stats", tun.ZeltunStats{})
 	}
 
-	sysutil.TrimProcessMemory()
+	sysutil.TrimGoMemory()
 	return nil
 }
 
@@ -251,13 +312,12 @@ func (a *AppService) ConnectDefault() error {
 	}
 	a.mu.Unlock()
 
-	if targetID == "" {
-		return fmt.Errorf("no profile available to connect")
-	}
-
 	mode := settings.Mode
 	if mode == "" {
 		mode = "tun"
+	}
+	if mode != "upstream" && targetID == "" {
+		return fmt.Errorf("no profile available to connect")
 	}
 	return a.Connect(targetID, mode)
 }
