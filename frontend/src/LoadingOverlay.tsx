@@ -202,7 +202,7 @@ export function LoadingOverlay() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.3, ease: 'easeOut' }}
-          className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/82 p-6 select-none"
+          className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/60 backdrop-blur-2xl p-6 select-none"
         >
           {/* Subtle Ambient Radial Glow in the center */}
           <div

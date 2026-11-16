@@ -29,7 +29,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/82 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
       <div className="modern-surface rounded-3xl w-full max-w-md p-5 shadow-2xl border border-white/20">
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div>

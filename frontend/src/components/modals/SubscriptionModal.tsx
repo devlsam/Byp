@@ -35,7 +35,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/82 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
       <div className="modern-surface rounded-3xl w-full max-w-sm p-4 shadow-2xl border border-white/20 max-h-[85vh] flex flex-col">
         <div className="flex items-center justify-between pb-3 border-b border-white/10 shrink-0">
           <span className="font-semibold text-xs text-white">
